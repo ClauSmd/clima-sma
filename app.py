@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 # 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(
-    page_title="Sintesis climatica sma V3.1", 
+    page_title="Sintesis climatica sma V3.2", 
     page_icon="🏔️", 
     layout="centered"
 )
@@ -19,26 +19,32 @@ except Exception as e:
 
 def sintetizar_con_ia(prompt):
     """
-    Sistema de Respaldo Blindado: 
-    Intenta usar Gemini 3 y salta a 1.5 si hay error.
+    Sistema de Respaldo con modelos validados de tu lista:
+    1. Gemini 3 Flash (Análisis profundo)
+    2. Gemini 2.0 Flash Lite (Salto de límites RPM)
+    3. Gemini 2.0 Flash (Estable)
     """
-    modelos_a_probar = ['gemini-3-flash-preview', 'gemini-1.5-flash']
+    # Nombres exactos de tu lista de Google AI Studio
+    modelos_a_probar = [
+        'gemini-3-flash-preview',
+        'gemini-2.0-flash-lite-preview',
+        'gemini-2.0-flash'
+    ]
     
     for nombre_modelo in modelos_a_probar:
         try:
             modelo_ai = genai.GenerativeModel(nombre_modelo)
             response = modelo_ai.generate_content(prompt)
-            # Validamos que la respuesta tenga texto
             if response and response.text:
                 return response.text, nombre_modelo
         except Exception as e:
-            # Captura saturación o modelo no encontrado
-            if "429" in str(e) or "404" in str(e):
+            # Si el modelo no existe o la cuota se agotó, pasa al siguiente
+            if "404" in str(e) or "429" in str(e):
                 continue
     return None, None
 
 # 3. INTERFAZ (SIDEBAR)
-st.title("🏔️ Sintesis climatica sma V3.1")
+st.title("🏔️ Sintesis climatica sma V3.2")
 
 st.sidebar.header("🗓️ Configuración")
 fecha_base = st.sidebar.date_input("Fecha de inicio", datetime.now())
@@ -51,13 +57,13 @@ val_accu = st.sidebar.text_input("AccuWeather", placeholder="Ej: 30/11")
 
 # 4. LÓGICA DE PROCESAMIENTO
 if st.button("Generar síntesis climática"):
-    with st.spinner("🧠 Analizando consenso de modelos técnicos..."):
+    with st.spinner("🧠 Sincronizando modelos globales y calibrando datos..."):
         try:
-            # Fechas para la API
+            # Fechas para la API Open-Meteo
             start_s = fecha_base.strftime("%Y-%m-%d")
             end_s = (fecha_base + timedelta(days=2)).strftime("%Y-%m-%d")
             
-            # Consulta Multi-Modelo (ECMWF, GFS, ICON, GEM, METNO)
+            # Consulta Multi-Modelo (5 fuentes técnicas)
             modelos_query = "ecmwf_ifs04,gfs_seamless,icon_seamless,gem_seamless,metno_seamless"
             url = (f"https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35"
                    f"&hourly=temperature_2m,precipitation_probability,windspeed_10m,windgusts_10m,snowfall,cloudcover"
@@ -67,7 +73,7 @@ if st.button("Generar síntesis climática"):
             r = requests.get(url)
             datos_tecnicos = r.json()
 
-            # CONSTRUCCIÓN DEL PROMPT
+            # CONSTRUCCIÓN DEL PROMPT (Respetando tu estructura guardada)
             referencias = f"SMN: {val_smn} | AIC (Dato Prioritario): {val_aic} | AccuWeather: {val_accu}"
             
             prompt = f"""
@@ -77,23 +83,26 @@ if st.button("Generar síntesis climática"):
 
             INSTRUCCIONES DE FORMATO (ESTRICTO):
             [Emoji] [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección] entre [velocidad] y [velocidad máxima] km/h, [lluvias previstas].
-            ⚠️ ALERTA: [Solo si ráfagas > 45km/h, calor > 30°C o nieve]
-            #[Lugar] #ClimaSMA #[Condicion]
+            ⚠️ ALERTA: [Solo si aplica por ráfagas > 45km/h, calor > 30°C o nieve]
+            #[Lugar] #ClimaSMA #[Condicion1] #[Condicion2]
+
+            NOTAS: La AIC es prioridad absoluta sobre los modelos globales. 
+            Analiza el consenso entre ECMWF, GFS, ICON, GEM y METNO.
             """
 
-            # Generación con respaldo
+            # Generación con respaldo automático
             resultado, modelo_final = sintetizar_con_ia(prompt)
             
             if resultado and modelo_final:
                 st.info(resultado)
                 st.divider()
+                # Línea interna solicitada con el modelo real utilizado
                 st.caption(f"Fusión híbrida de datos satelitales y referencias locales SMA. | Inteligencia: {modelo_final.upper()}")
             else:
-                # Si fallan ambos modelos, damos un aviso limpio
-                st.warning("⚠️ **Servicio saturado.** Google ha limitado las consultas gratuitas por este minuto. Por favor, esperá 60 segundos y volvé a presionar el botón.")
+                st.warning("⚠️ **Servicio temporalmente saturado.** Google limitó las consultas por este minuto. Esperá 60 segundos y volvé a intentar.")
 
         except Exception as e:
             st.error(f"Error en la consulta de datos: {e}")
 
 st.sidebar.divider()
-st.sidebar.info("Cerebro Dual: Gemini 3 Flash & 1.5 Flash")
+st.sidebar.info("Cerebro: Jerarquía Gemini 3 / 2.0 Lite / 2.0")
