@@ -3,55 +3,63 @@ import requests
 import google.generativeai as genai
 from datetime import datetime, timedelta
 
-# 1. Configuración de Estética y Página
-st.set_page_config(page_title="Sintesis climatica sma", page_icon="🏔️")
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTÉTICA
+st.set_page_config(
+    page_title="Sintesis climatica sma V3.0", 
+    page_icon="🏔️", 
+    layout="centered"
+)
 
-# 2. Configuración Gemini
+# 2. CONFIGURACIÓN DE INTELIGENCIA ARTIFICIAL (GEMINI)
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
 except Exception as e:
-    st.error(f"Error de configuración: {e}")
+    st.error("Error: No se encontró la API KEY en los Secrets de Streamlit.")
 
-# FUNCIÓN DE RESPALDO (Para evitar el error 429)
-def sintetizar_clima(prompt):
-    # Intentamos primero con tu modelo preferido (Gemini 3 Flash)
-    # Si falla por cuota, saltamos al 1.5 Flash que tiene 1500 consultas/día
-    modelos = ['gemini-3-flash-preview', 'gemini-1.5-flash']
+def sintetizar_con_ia(prompt):
+    """
+    Intenta generar el reporte con Gemini 3. 
+    Si hay error de cuota (429) o no se encuentra (404), salta al 1.5.
+    """
+    modelos_a_probar = ['gemini-3-flash-preview', 'gemini-1.5-flash']
     
-    for mod in modelos:
+    for nombre_modelo in modelos_a_probar:
         try:
-            modelo_ai = genai.GenerativeModel(mod)
+            modelo_ai = genai.GenerativeModel(nombre_modelo)
             response = modelo_ai.generate_content(prompt)
-            return response.text, mod
+            return response.text, nombre_modelo
         except Exception as e:
-            if "429" in str(e):
-                continue # Salta al siguiente modelo si el actual está saturado
+            # Si es error de saturación o modelo no encontrado, probamos el siguiente
+            if "429" in str(e) or "404" in str(e):
+                continue
             else:
                 return f"Error técnico: {e}", None
-    return "Lo siento, todos los servicios están saturados. Reintentá en 1 minuto.", None
+    return "Todos los modelos están saturados. Reintentá en 1 minuto.", None
 
+# 3. INTERFAZ DE USUARIO (SIDEBAR)
 st.title("🏔️ Sintesis climatica sma V3.0")
 
-# 3. Sidebar (Tu centro de control)
 st.sidebar.header("🗓️ Configuración")
 fecha_base = st.sidebar.date_input("Fecha de inicio", datetime.now())
 
 st.sidebar.divider()
 st.sidebar.subheader("🔗 Calibración Manual")
-st.sidebar.caption("Tus datos son 'Verdad de Campo' y corrigen a los modelos.")
+st.sidebar.caption("Tus datos tienen prioridad total sobre los modelos globales.")
 val_smn = st.sidebar.text_input("SMN (Máx/Mín)", placeholder="Ej: 28/11")
 val_aic = st.sidebar.text_input("AIC (Máx/Mín)", placeholder="Ej: 29/6")
 val_accu = st.sidebar.text_input("AccuWeather", placeholder="Ej: 30/11")
 
-# 4. Lógica de Discusión de 5 Modelos
-if st.button("Generar sintesis climatica"):
-    with st.spinner("🧠 Consultando 5 modelos y calibrando con tus datos..."):
+# 4. PROCESAMIENTO PRINCIPAL
+if st.button("Generar síntesis climática"):
+    with st.spinner("🧠 Sincronizando 5 modelos globales y calibrando con datos locales..."):
         try:
+            # Configuración de fechas para la API
             start_s = fecha_base.strftime("%Y-%m-%d")
             end_s = (fecha_base + timedelta(days=2)).strftime("%Y-%m-%d")
             
-            # Consulta a los 5 mejores modelos del mundo para SMA
+            # CONSULTA A OPEN-METEO (5 MODELOS TÉCNICOS)
+            # ECMWF (IFS), GFS, ICON, GEM, METNO
             modelos_query = "ecmwf_ifs04,gfs_seamless,icon_seamless,gem_seamless,metno_seamless"
             url = (f"https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35"
                    f"&hourly=temperature_2m,precipitation_probability,windspeed_10m,windgusts_10m,snowfall,cloudcover"
@@ -60,29 +68,37 @@ if st.button("Generar sintesis climatica"):
             
             datos_tecnicos = requests.get(url).json()
 
-            # Construcción del Prompt con tu estructura guardada
+            # CONSTRUCCIÓN DEL PROMPT PARA LA IA
+            ref_info = f"SMN: {val_smn} | AIC (Prioridad): {val_aic} | AccuWeather: {val_accu}"
+            
             prompt = f"""
             ESTACIÓN: San Martín de los Andes.
-            DATOS TÉCNICOS: {datos_tecnicos}
-            REFERENCIAS LOCALES: SMN({val_smn}), AIC({val_aic}), Accu({val_accu})
+            DATOS TÉCNICOS DE MODELOS (ECMWF, GFS, ICON, GEM, METNO): {datos_tecnicos}
+            REFERENCIAS LOCALES INGRESADAS: {ref_info}
 
-            INSTRUCCIONES CRÍTICAS:
-            1. ESTRUCTURA RÍGIDA: [Emoji] [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección] entre [vel] y [vel máx] km/h, [lluvias].
-            2. PRIORIDAD: Si AIC indica valores distintos a los modelos, AJUSTA el reporte hacia los valores de la AIC (Verdad de Campo).
-            3. ALERTAS: Una línea extra con emoji ⚠️ si ráfagas > 45km/h o temp > 30°C.
-            4. FINAL: Agregá los hashtags #[Lugar] #ClimaSMA #[Condicion]
+            TAREA: Realiza una síntesis climática profesional.
+            
+            REGLAS DE ORO:
+            1. ESTRUCTURA (ESTRICTA): [Emoji] [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección] entre [velocidad] y [velocidad máxima] km/h, [lluvias previstas].
+            2. CALIBRACIÓN: Si los datos de 'REFERENCIAS LOCALES' (especialmente AIC) difieren de los modelos técnicos, asume que los modelos tienen un sesgo y AJUSTA el pronóstico a la realidad local.
+            3. ALERTAS: Agrega una línea con ⚠️ ALERTA si hay ráfagas > 45km/h, calor > 30°C o nieve.
+            4. HASHTAGS: Al final de cada día poner #[Lugar] #ClimaSMA #[Condicion]
             """
 
-            resultado, mod_usado = sintetizar_clima(prompt)
+            # EJECUCIÓN CON SISTEMA DE RESPALDO
+            resultado, modelo_usado = sintetizar_con_ia(prompt)
             
-            if mod_usado:
+            if resultado:
                 st.info(resultado)
-                st.caption(f"⚙️ Motor: {mod_usado} | Consenso: ECMWF, GFS, ICON, GEM, METNO")
+                
+                # PIE DE PÁGINA DINÁMICO
+                st.divider()
+                st.caption(f"Fusión híbrida de datos satelitales y referencias locales SMA. | Inteligencia: {modelo_usado.upper()}")
             else:
-                st.error(resultado)
+                st.error("No se pudo procesar la información de los modelos.")
 
         except Exception as e:
-            st.error(f"Error de conexión: {e}")
+            st.error(f"Error en la obtención de datos: {e}")
 
-st.divider()
-st.caption("Fusión híbrida de datos satelitales y referencias locales SMA.")
+st.sidebar.divider()
+st.sidebar.info("Cerebro: Gemini 3 Flash / 1.5 Flash")
