@@ -2,89 +2,56 @@ import streamlit as st
 import requests
 import google.generativeai as genai
 
-# --------------------------------------------------
-# Configuración de página
-# --------------------------------------------------
-st.set_page_config(
-    page_title="Consenso Climático SMA",
-    page_icon="🌤️"
-)
+st.set_page_config(page_title="Consenso Climático SMA", page_icon="🌤️")
 
 st.title("🛰️ Analizador Climático Infalible")
 st.subheader("San Martín de los Andes")
 
-# --------------------------------------------------
-# Inicialización Gemini (fallback REAL)
-# --------------------------------------------------
-MODELOS_GEMINI = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
-]
-
+# --- INICIALIZACIÓN FORZADA ---
 def inicializar_modelo():
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-
-    ultimo_error = None
-
-    for modelo in MODELOS_GEMINI:
+    
+    # Probamos con las rutas absolutas de modelos estables
+    nombres_modelos = [
+        'models/gemini-1.5-flash-latest',
+        'models/gemini-1.5-pro-latest',
+        'models/gemini-pro'
+    ]
+    
+    for nombre in nombres_modelos:
         try:
-            model = genai.GenerativeModel(modelo)
-            model.generate_content("Ping")
-            st.success(f"Modelo Gemini activo: {modelo}")
+            model = genai.GenerativeModel(model_name=nombre)
+            # Prueba de vida
+            model.generate_content("test") 
+            st.success(f"Conectado exitosamente a: {nombre}")
             return model
-        except Exception as e:
-            ultimo_error = e
+        except Exception:
+            continue
+    
+    return None
 
-    raise RuntimeError(f"No se pudo inicializar Gemini. Último error: {ultimo_error}")
+model_ai = inicializar_modelo()
 
-try:
-    model_ai = inicializar_modelo()
-except Exception as e:
-    st.error(str(e))
+if model_ai is None:
+    st.error("No se pudo conectar con ningún modelo de Google. Revisa si tu API Key es válida en Google AI Studio.")
     st.stop()
 
-# --------------------------------------------------
-# Acción principal
-# --------------------------------------------------
+# --- ACCIÓN DEL BOTÓN ---
 if st.button("Generar Pronóstico de Consenso"):
-    with st.spinner("Sincronizando modelos GFS, ECMWF e ICON..."):
+    with st.spinner("Analizando modelos GFS, ECMWF e ICON..."):
         try:
-            url = (
-                "https://api.open-meteo.com/v1/forecast"
-                "?latitude=-40.15"
-                "&longitude=-71.35"
-                "&hourly=temperature_2m,precipitation_probability,"
-                "precipitation,cloudcover,windspeed_10m,windgusts_10m,"
-                "snowfall,showers"
-                "&models=ecmwf_ifs04,gfs_seamless,icon_seamless"
-                "&timezone=America%2FArgentina%2FBuenos_Aires"
-                "&forecast_days=1"
-            )
+            # Consulta a Open-Meteo (SMA)
+            url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&hourly=temperature_2m,precipitation_probability,precipitation,cloudcover,windspeed_10m,windgusts_10m,snowfall,showers&models=ecmwf_ifs04,gfs_seamless,icon_seamless&timezone=America%2FArgentina%2FBuenos_Aires&forecast_days=1"
+            datos = requests.get(url).json()
 
-            datos = requests.get(url, timeout=20).json()
-
-            prompt = f"""
-Analiza estos datos meteorológicos de San Martín de los Andes: {datos}
-
-Devuelve SOLO este formato:
-
-[Día] [fecha] – San Martín de los Andes:
-[condición general], cielo [estado].
-Máx [°C] / Mín [°C].
-Viento [dirección] [velocidad] km/h.
-[Lluvia / nieve / sin precipitaciones].
-
-#SanMartínDeLosAndes #ClimaSMA
-"""
+            prompt = f"""Analiza estos datos meteorológicos: {datos}.
+            Genera un resumen siguiendo ESTRICTAMENTE este formato:
+            [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección del viento] entre [velocidad del viento] y [velocidad máxima del viento] km/h, [lluvias previstas].
+            #SanMartínDeLosAndes #ClimaSMA #[Condición1] #[Condición2] #[Condición3]"""
 
             response = model_ai.generate_content(prompt)
-
-            if response.text:
-                st.success("Pronóstico generado")
-                st.info(response.text)
-            else:
-                st.warning("Respuesta vacía del modelo")
+            st.info(response.text)
 
         except Exception as e:
-            st.error(f"Error técnico: {e}")
+            st.error(f"Error al procesar los datos climáticos: {e}")
