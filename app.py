@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import google.generativeai as genai
+from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Consenso Climático SMA", page_icon="🌤️")
 
@@ -14,43 +15,62 @@ except Exception as e:
 
 st.title("🛰️ Monitor Climático SMA v3.0")
 
-# --- NUEVA SECCIÓN DE REFINAMIENTO ---
-st.sidebar.header("🔍 Datos de Referencia (Opcional)")
-st.sidebar.write("Ingresa lo que marcan las webs para refinar el consenso:")
-val_smn = st.sidebar.text_input("SMN (Ej: 28/11)", placeholder="28/11")
-val_accu = st.sidebar.text_input("AccuWeather (Ej: 32/13)", placeholder="32/13")
-val_aic = st.sidebar.text_input("AIC (Ej: 29/6)", placeholder="29/6")
+# --- BARRA LATERAL: FECHA Y REFERENCIAS ---
+st.sidebar.header("📅 Configuración de Consulta")
 
-if st.button("Generar Pronóstico Refinado"):
-    with st.spinner("Gemini 3 analizando divergencias..."):
+# Selector de fecha (por defecto hoy)
+fecha_base = st.sidebar.date_input("Fecha de inicio", datetime.now())
+fecha_fin = fecha_base + timedelta(days=2)
+
+st.sidebar.divider()
+st.sidebar.write(f"🔍 Referencias para el {fecha_base.strftime('%d/%m')}:")
+val_smn = st.sidebar.text_input("SMN (Máx/Mín)", placeholder="Ej: 28/11")
+val_accu = st.sidebar.text_input("AccuWeather", placeholder="Ej: 32/13")
+val_aic = st.sidebar.text_input("AIC", placeholder="Ej: 29/6")
+
+if st.button(f"Generar Consenso {fecha_base.strftime('%d/%m')} al {fecha_fin.strftime('%d/%m')}"):
+    with st.spinner("Analizando modelos y comparando fuentes..."):
         try:
-            # Datos técnicos de modelos globales
-            url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&hourly=temperature_2m,precipitation_probability,cloudcover,windspeed_10m,windgusts_10m&models=ecmwf_ifs04,gfs_seamless,icon_seamless&timezone=America%2FArgentina%2FBuenos_Aires&forecast_days=3"
+            # Formateamos fechas para la API
+            start_str = fecha_base.strftime("%Y-%m-%d")
+            end_str = fecha_fin.strftime("%Y-%m-%d")
+            
+            # URL dinámica con el rango de fechas elegido
+            url = (
+                f"https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35"
+                f"&hourly=temperature_2m,precipitation_probability,cloudcover,windspeed_10m,windgusts_10m"
+                f"&models=ecmwf_ifs04,gfs_seamless,icon_seamless"
+                f"&start_date={start_str}&end_date={end_str}"
+                f"&timezone=America%2FArgentina%2FBuenos_Aires"
+            )
+            
             datos_raw = requests.get(url).json()
 
-            # PROMPT DE JUICIO CRÍTICO
+            # PROMPT CON CONTEXTO DE FECHA Y COMPARATIVA
             prompt = f"""
-            ESTACIÓN: San Martín de los Andes (SMA).
-            DATOS TÉCNICOS (ECMWF/GFS/ICON): {datos_raw}
+            ESTACIÓN: San Martín de los Andes.
+            RANGO SOLICITADO: {start_str} al {end_str} (3 días).
             
-            REFERENCIAS EXTERNAS ACTUALES:
-            - Servicio Meteorológico Nacional (SMN): {val_smn}
+            DATOS TÉCNICOS DE MODELOS: {datos_raw}
+            
+            REFERENCIAS MANUALES (Solo para el día {start_str}):
+            - SMN: {val_smn}
             - AccuWeather: {val_accu}
             - AIC: {val_aic}
 
             TAREA:
-            1. Analiza la divergencia. AIC suele ser más preciso en mínimas en SMA por la inversión térmica, mientras que GFS (AccuWeather) a veces exagera las máximas en verano.
-            2. Genera un "Consenso Inteligente" que no sea un simple promedio, sino una interpretación lógica.
-            3. Si el SMN y AIC coinciden pero AccuWeather se dispara, dale más peso a los locales.
+            1. Para el primer día ({start_str}), utiliza las 'REFERENCIAS MANUALES' para ajustar los datos de los modelos globales. Si hay mucha diferencia, prioriza el consenso entre AIC y SMN.
+            2. Para los dos días siguientes, realiza la predicción basada en la tendencia de los modelos GFS/ECMWF/ICON.
+            3. Redacta el informe con tono profesional y natural.
 
-            FORMATO DE SALIDA (ESTRICTO):
+            FORMATO DE SALIDA:
             [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [Resumen] con [cielo], Máx [Máx]°C / Mín [Mín]°C. Viento [Dirección] de [Vel] a [Ráf] km/h, [Lluvias].
-            #SanMartínDeLosAndes #ClimaSMA #[Condición1] #[Condición2] #[Hashtag_Tendencia]
+            #SanMartínDeLosAndes #ClimaSMA #[Condición1] #[Condición2] #[Tendencia]
             ---
             """
 
             response = model_ai.generate_content(prompt)
-            st.markdown("### 📊 Pronóstico de Consenso Refinado")
+            st.markdown(f"### 📊 Informe de Consenso Refinado")
             st.info(response.text)
             
         except Exception as e:
