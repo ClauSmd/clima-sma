@@ -4,30 +4,34 @@ import google.generativeai as genai
 
 st.set_page_config(page_title="Consenso Climático SMA", page_icon="🌤️")
 
-# Configuración simplificada al máximo
+# CONFIGURACIÓN FORZADA
 try:
-    key = st.secrets["GOOGLE_API_KEY"]
-    genai.configure(api_key=key)
-    # Usamos el modelo más básico y compatible
-    model_ai = genai.GenerativeModel('gemini-1.5-flash')
+    api_key = st.secrets["GOOGLE_API_KEY"]
+    # Forzamos la configuración para evitar el error v1beta
+    genai.configure(api_key=api_key)
+    # Usamos la ruta completa del modelo estable
+    model_ai = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
 except Exception as e:
     st.error(f"Error de configuración: {e}")
 
 st.title("🛰️ Analizador Climático SMA")
 
-if st.button("Generar Pronóstico"):
-    with st.spinner("Obteniendo datos..."):
+if st.button("Generar Pronóstico de Consenso"):
+    with st.spinner("Consultando modelos GFS, ECMWF e ICON..."):
         try:
-            # Datos de Open-Meteo
-            url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&hourly=temperature_2m,precipitation_probability,windspeed_10m&models=ecmwf_ifs04,gfs_seamless,icon_seamless&timezone=America%2FArgentina%2FBuenos_Aires&forecast_days=1"
+            # Consulta a Open-Meteo (SMA)
+            url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&hourly=temperature_2m,precipitation_probability,precipitation,cloudcover,windspeed_10m,windgusts_10m,snowfall,showers&models=ecmwf_ifs04,gfs_seamless,icon_seamless&timezone=America%2FArgentina%2FBuenos_Aires&forecast_days=1"
             datos = requests.get(url).json()
 
-            prompt = f"Resume estos datos: {datos}. Usa el formato: [Día] [Día] de [Mes] – San Martín de los Andes: [condiciones] con [cielo], máxima [máx] °C, mínima [mín] °C. Viento [vel] km/h, [lluvias]. #SanMartínDeLosAndes #ClimaSMA"
+            # Estructura guardada en tus instrucciones
+            prompt = f"""Analiza estos datos meteorológicos: {datos}.
+            Genera un resumen siguiendo ESTRICTAMENTE este formato:
+            Viernes 2 de Enero – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección del viento] entre [velocidad del viento] y [velocidad máxima del viento] km/h, [lluvias previstas].
+            #SanMartínDeLosAndes #ClimaSMA #[Condición1] #[Condición2] #[Condición3]"""
 
-            # Intento de generación directa
+            # Generar contenido usando la API estable
             response = model_ai.generate_content(prompt)
             st.info(response.text)
 
         except Exception as e:
-            st.error(f"Error: {e}")
-            st.write("Si ves un 404, por favor crea una NUEVA API Key en un proyecto nuevo en Google AI Studio.")
+            st.error(f"Error técnico: {e}")
