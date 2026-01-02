@@ -10,7 +10,7 @@ try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
     # Probamos con la versión más estable para 2026
-    model_ai = genai.GenerativeModel('gemini-1.5-flash')
+    model_ai = genai.GenerativeModel('gemini-1.5-flash-latest')
 except Exception as e:
     st.error("Error en la configuración de la API Key. Revisa los Secrets en Streamlit.")
 
