@@ -8,7 +8,7 @@ st.set_page_config(page_title="Consenso Climático SMA", page_icon="🌤️")
 # Acceder a la clave de API de forma segura
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
-model_ai = genai.GenerativeModel('gemini-1.5-flash')
+model_ai = genai.GenerativeModel('gemini-pro')
 
 st.title("🛰️ Analizador Climático Infalible")
 st.subheader("San Martín de los Andes")
