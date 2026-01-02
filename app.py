@@ -6,13 +6,25 @@ from datetime import datetime, timedelta
 # 1. Configuración de Estética
 st.set_page_config(page_title="Sintesis climatica sma", page_icon="🏔️", initial_sidebar_state="expanded")
 
-# 2. Configuración Gemini 3
+# 2. Configuración de Inteligencia con Respaldo 2.5 Lite
 try:
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-    model_ai = genai.GenerativeModel('models/gemini-3-flash-preview')
 except Exception as e:
     st.error(f"Error de API: {e}")
+
+def ejecutar_sintesis(prompt):
+    # Intentamos primero con tu modelo principal y luego con el 2.5 Lite de tu lista
+    modelos = ['gemini-3-flash-preview', 'gemini-2.5-flash-lite']
+    for m in modelos:
+        try:
+            model_ai = genai.GenerativeModel(m)
+            response = model_ai.generate_content(prompt)
+            return response.text, m
+        except Exception as e:
+            if "429" in str(e) or "404" in str(e):
+                continue # Salta al siguiente modelo si hay saturación o error de nombre
+    return None, None
 
 st.title("🏔️ Sintesis climatica sma V3.0")
 
@@ -47,30 +59,28 @@ if st.button("Generar sintesis climatica"):
             if val_accu: ref_data.append(f"AccuWeather: {val_accu}")
             contexto_referencia = "\n".join(ref_data) if ref_data else "Sin datos manuales."
 
-            # PROMPT CON ESTRUCTURA RÍGIDA
+            # PROMPT CON TU ESTRUCTURA RÍGIDA
             prompt = f"""
             ESTACIÓN: San Martín de los Andes.
             DATOS TÉCNICOS: {datos}
             CALIBRACIÓN MANUAL: {contexto_referencia}
 
             INSTRUCCIONES DE FORMATO (OBLIGATORIO):
-            Para cada día, utiliza EXACTAMENTE esta estructura, sin negritas en los títulos ni etiquetas como "Condiciones" o "Viento":
-
-            [Emoji de clima] [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección del viento] entre [velocidad del viento] y [velocidad máxima del viento] km/h, [lluvias previstas].
-            [Emoji de Alerta] ALERTA: [Solo si aplica por ráfagas >45km/h, calor >30°C o nieve. Si no, omite esta línea]
-            #[Lugar] #ClimaSMA #[Condición1] #[Condición2]
-
-            REGLAS TÉCNICAS:
-            - Los datos manuales (especialmente AIC) tienen prioridad sobre los modelos globales.
-            - Usa emojis para que sea visualmente atractivo.
-            - Separa cada día con una línea horizontal ---.
+            [Emoji] [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección del viento] entre [velocidad] y [velocidad máxima] km/h, [lluvias previstas].
+            #[Lugar] #ClimaSMA #[Condición general 1] #[Condición general 2] #[Condición general 3]
             """
 
-            response = model_ai.generate_content(prompt)
-            st.info(response.text)
+            resultado, modelo_usado = ejecutar_sintesis(prompt)
+            
+            if resultado:
+                st.info(resultado)
+                st.divider()
+                st.caption(f"Fusión híbrida de datos satelitales y referencias locales SMA. | Inteligencia: {modelo_usado.upper()}")
+            else:
+                st.warning("⚠️ Servicio saturado en todos los modelos. Esperá un momento.")
                 
         except Exception as e:
             st.error(f"Error técnico: {e}")
 
 st.divider()
-st.caption("Cerebro: Gemini 3 Flash | Estructura Personalizada SMA")
+st.caption("Cerebro: Sistema de Respaldo 3.0 / 2.5 Lite")
