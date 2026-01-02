@@ -59,13 +59,18 @@ if st.button("Generar sintesis climatica"):
             if val_accu: ref_data.append(f"AccuWeather: {val_accu}")
             contexto_referencia = "\n".join(ref_data) if ref_data else "Sin datos manuales."
 
-            # PROMPT CON TU ESTRUCTURA RÍGIDA
+            # PROMPT ACTUALIZADO CON ANCLAJE DE FECHA REAL
+            # fecha_base.strftime('%A') nos da el nombre del día seleccionado en el calendario
             prompt = f"""
             ESTACIÓN: San Martín de los Andes.
+            FECHA DE INICIO: Hoy es {fecha_base.strftime('%A %d de %B de %Y')}.
             DATOS TÉCNICOS: {datos}
             CALIBRACIÓN MANUAL: {contexto_referencia}
 
             INSTRUCCIONES DE FORMATO (OBLIGATORIO):
+            Genera el pronóstico para 3 días empezando desde hoy ({fecha_base.strftime('%A %d')}).
+            Usa EXACTAMENTE esta estructura para cada día y sepáralos con ---:
+
             [Emoji] [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección del viento] entre [velocidad] y [velocidad máxima] km/h, [lluvias previstas].
             #[Lugar] #ClimaSMA #[Condición general 1] #[Condición general 2] #[Condición general 3]
             """
@@ -83,4 +88,4 @@ if st.button("Generar sintesis climatica"):
             st.error(f"Error técnico: {e}")
 
 st.divider()
-st.caption("Cerebro: Sistema de Respaldo 3.0 / 2.5 Lite")
+st.caption("Cerebro: Sistema de Respaldo 3.0 / 2.5 Lite | Fecha Sincronizada")
