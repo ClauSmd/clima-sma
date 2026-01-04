@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import time
 from datetime import datetime, timedelta
 import zipfile
 import io
@@ -22,23 +23,31 @@ def obtener_datos_smn():
             with z.open(nombre_txt) as f:
                 contenido = f.read().decode('utf-8', errors='ignore')
                 if "CHAPELCO_AERO" in contenido:
-                    # Recortamos solo el bloque de Chapelco
-                    bloque = contenido.split("CHAPELCO_AERO")[1].split("=")[0]
-                    return bloque.strip()
-        return "❌ Chapelco Aero no encontrado en el ZIP."
+                    return contenido.split("CHAPELCO_AERO")[1].split("=")[0].strip()
+        return "❌ Chapelco Aero no encontrado."
     except Exception as e:
         return f"❌ Error SMN: {e}"
 
 def obtener_datos_aic_sync():
+    # Usamos la URL que tiene más éxito (la del ID directo)
     url = "https://www.aic.gob.ar/sitio/extendido-pdf?id_localidad=22&id_pronostico=1"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    try:
-        r = requests.get(url, headers=headers, verify=False, timeout=30)
-        if len(r.content) < 1000: return "❌ PDF de AIC muy pequeño o vacío."
-        with pdfplumber.open(io.BytesIO(r.content)) as pdf:
-            return pdf.pages[0].extract_text()
-    except Exception as e:
-        return f"❌ Error AIC: {e}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Accept': 'application/pdf'
+    }
+    
+    # Intentamos hasta 2 veces por si el servidor está lento generando el PDF
+    for intento in range(2):
+        try:
+            r = requests.get(url, headers=headers, verify=False, timeout=30)
+            if r.status_code == 200 and len(r.content) > 1000:
+                with pdfplumber.open(io.BytesIO(r.content)) as pdf:
+                    return pdf.pages[0].extract_text()
+            time.sleep(2) # Espera un poco antes del reintento
+        except Exception as e:
+            if intento == 1: return f"❌ Error AIC tras reintento: {e}"
+            time.sleep(2)
+    return "❌ Error: El servidor de AIC no entregó un PDF válido."
 
 def obtener_satelital(fecha_inicio):
     start = fecha_inicio.strftime("%Y-%m-%d")
@@ -47,62 +56,38 @@ def obtener_satelital(fecha_inicio):
            f"&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,windgusts_10m_max"
            f"&timezone=America%2FArgentina%2FBuenos_Aires&start_date={start}&end_date={end}")
     try:
-        return requests.get(url).json()
+        return requests.get(url, timeout=15).json()
     except Exception as e:
         return {"error": str(e)}
 
-# --- INTERFAZ DE PRUEBA ---
+# --- INTERFAZ ---
 st.title("🔍 Verificador de Datos SMA")
-st.info("Esta versión es para confirmar que todas las conexiones funcionan antes de activar la IA.")
-
 fecha_base = st.sidebar.date_input("Fecha de inicio", datetime.now())
 
 if st.button("🧪 PROBAR TODAS LAS FUENTES"):
-    with st.status("Solicitando datos oficiales...") as status:
-        
-        # 1. SMN
-        status.update(label="Consultando SMN (Chapelco Aero)...")
+    with st.status("Solicitando datos...") as status:
         smn_res = obtener_datos_smn()
-        
-        # 2. AIC
-        status.update(label="Consultando AIC (PDF Extendido)...")
         aic_res = obtener_datos_aic_sync()
-        
-        # 3. Modelos
-        status.update(label="Consultando Open-Meteo (Satelital)...")
         sat_res = obtener_satelital(fecha_base)
-        
-        status.update(label="¡Sincronización completa!", state="complete")
+        status.update(label="Sincronización completa", state="complete")
 
-    # --- RESULTADOS ---
-    
-    # Fila 1: SMN y AIC
     col1, col2 = st.columns(2)
-    
     with col1:
-        st.subheader("📡 SMN (Txt Oficial)")
+        st.subheader("📡 SMN")
         if "❌" not in smn_res:
-            st.success("Conexión Exitosa")
-            st.text_area("Bloque Chapelco:", smn_res, height=250)
-        else:
-            st.error(smn_res)
+            st.success("OK")
+            st.text_area("Datos:", smn_res, height=200)
+        else: st.error(smn_res)
             
     with col2:
-        st.subheader("📄 AIC (PDF Texto)")
+        st.subheader("📄 AIC")
         if "❌" not in aic_res:
-            st.success("Lectura Exitosa")
-            st.text_area("Texto AIC:", aic_res, height=250)
-        else:
-            st.error(aic_res)
+            st.success("OK")
+            st.text_area("Datos:", aic_res, height=200)
+        else: st.error(aic_res)
 
-    # Fila 2: Satelital
-    st.divider()
-    st.subheader("🌍 Modelos Globales (JSON)")
+    st.subheader("🌍 Modelos Satelitales")
     if "daily" in sat_res:
-        st.success("API Satelital funcionando correctamente")
+        st.success("OK")
         st.json(sat_res["daily"])
-    else:
-        st.error(f"Fallo Satelital: {sat_res}")
-
-    st.write("---")
-    st.caption("Si ves texto en los dos cuadros de arriba y números en el JSON de abajo, estamos listos para encender la IA.")
+    else: st.error(f"Fallo Satélite: {sat_res}")
