@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import zipfile
 import io
 import pdfplumber
+import re
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -26,20 +27,45 @@ def obtener_datos_smn():
     except: return None
 
 def obtener_datos_aic_sync():
-    # CAMBIO CRÍTICO: Nueva URL con parámetros de sesión simulados
-    url = "https://www.aic.gob.ar/sitio/extendido-pdf?id_localidad=22&id_pronostico=1"
+    """Obtiene datos del PDF de AIC - VERSIÓN CORREGIDA"""
+    # URLs alternativas por si una falla
+    urls = [
+        "https://www.aic.gob.ar/sitio/extendido-pdf?a=1029&z=1750130550",  # URL original con parámetros
+        "https://www.aic.gob.ar/sitio/extendido-pdf?id_localidad=22&id_pronostico=1",  # URL alternativa
+    ]
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/pdf, */*',
+        'Referer': 'https://www.aic.gob.ar/'
     }
-    try:
-        r = requests.get(url, headers=headers, verify=False, timeout=25)
-        if len(r.content) < 500: # Si es muy chico, no es un PDF
-            return "Error: El servidor de AIC entregó un archivo vacío o corrupto."
-        
-        with pdfplumber.open(io.BytesIO(r.content)) as pdf:
-            return pdf.pages[0].extract_text()
-    except Exception as e:
-        return f"Error AIC: {e}"
+    
+    for url in urls:
+        try:
+            # Intentar descargar el PDF
+            response = requests.get(url, headers=headers, verify=False, timeout=30)
+            
+            if response.status_code != 200:
+                continue  # Intentar con la siguiente URL
+            
+            pdf_bytes = response.content
+            
+            # Verificar que sea un PDF válido (mínimo 1000 bytes)
+            if len(pdf_bytes) < 1000:
+                continue
+            
+            # Extraer texto del PDF
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                texto = pdf.pages[0].extract_text()
+                
+                if texto and len(texto) > 100:  # Verificar que haya texto suficiente
+                    return texto
+            
+        except Exception as e:
+            continue  # Intentar con la siguiente URL
+    
+    # Si todas las URLs fallan
+    return "Error: No se pudo obtener el pronóstico de AIC. El servidor puede estar temporalmente no disponible."
 
 def obtener_satelital(fecha_inicio):
     start = fecha_inicio.strftime("%Y-%m-%d")
@@ -61,10 +87,70 @@ if st.button("🚀 Generar Reporte"):
         status.update(label="Datos obtenidos. Procesando...", state="complete")
 
     # MODO TEST: Si quieres ver los datos crudos antes de gastar IA
-    st.expander("Ver datos crudos (Debug)").write({"SMN": smn, "AIC": aic, "SAT": sat})
+    with st.expander("Ver datos crudos (Debug)"):
+        st.write("**SMN:**")
+        st.text(smn[:500] + "..." if smn and len(smn) > 500 else smn)
+        
+        st.write("**AIC:**")
+        st.text(aic[:500] + "..." if aic and len(aic) > 500 else aic)
+        
+        st.write("**SAT:**")
+        st.json(sat)
 
     # --- BLOQUE DE IA (DESCOMENTAR CUANDO AIC DE 'OK') ---
     # prompt = f"FECHA: {fecha_base}. DATOS: AIC:{aic}, SMN:{smn}, SAT:{sat}. TAREA: Generar sintesis de 6 días estilo: 'Sábado 20 de Diciembre – San Martín de los Andes: tiempo estable...'"
     # model = genai.GenerativeModel('gemini-1.5-flash')
     # res = model.generate_content(prompt)
     # st.markdown(res.text)
+    
+    # Mostrar datos parseados del AIC
+    if aic and not aic.startswith("Error:"):
+        st.subheader("📊 Datos Parseados del AIC")
+        
+        # Intentar parsear el texto del PDF
+        lineas = [line.strip() for line in aic.split('\n') if line.strip()]
+        
+        if len(lineas) >= 13:
+            try:
+                # Fechas
+                fechas_line = lineas[1]
+                fechas = fechas_line.split()
+                
+                # Periodos
+                periodos_line = lineas[2]
+                periodos = periodos_line.split()
+                
+                # Temperaturas
+                temps = re.findall(r'(-?\d+)\s*[ºC°C]', lineas[7])
+                temps = [f"{t}°C" for t in temps]
+                
+                # Viento
+                winds = re.findall(r'(\d+)\s*km/h', lineas[8])
+                winds = [f"{w} km/h" for w in winds]
+                
+                # Dirección
+                dirs = lineas[10].replace('Dirección', '').strip().split()
+                
+                # Mostrar tabla
+                if temps and winds:
+                    st.write("**Primeros días pronosticados:**")
+                    
+                    for i in range(min(4, len(periodos))):
+                        fecha_idx = i // 2 * 2
+                        fecha = fechas[fecha_idx] if fecha_idx < len(fechas) else "N/D"
+                        
+                        if i % 2 == 0:  # Solo mostrar una vez por fecha
+                            st.write(f"**{fecha}**")
+                            
+                            # Día
+                            if i < len(periodos) and periodos[i] == 'Día':
+                                st.write(f"  ☀️ **Día**: {temps[i]} | Viento: {winds[i]} {dirs[i] if i < len(dirs) else ''}")
+                            
+                            # Noche (siguiente registro)
+                            if i+1 < len(periodos) and periodos[i+1] == 'Noche':
+                                st.write(f"  🌙 **Noche**: {temps[i+1]} | Viento: {winds[i+1]} {dirs[i+1] if i+1 < len(dirs) else ''}")
+                            
+                            st.write("---")
+            except Exception as e:
+                st.warning(f"No se pudieron parsear todos los datos del AIC: {e}")
+                st.text_area("Contenido crudo del AIC:", aic[:1000], height=200)
