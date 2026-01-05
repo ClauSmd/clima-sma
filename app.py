@@ -9,22 +9,14 @@ import pdfplumber
 import time
 import urllib3
 import pandas as pd
+import json
 
 # Deshabilitar warnings de SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================================================
-# 1. CONFIGURACIÓN INICIAL - CON API KEY FIXED
+# 1. CONFIGURACIÓN SEGURA - SIN API KEY EN CÓDIGO
 # ============================================================================
-
-# Configurar API Key de Google (tu clave)
-API_KEY = "AIzaSyBKoBfnlDsZ99DFgg2EQfhdfl_3B8yj_34"
-
-try:
-    genai.configure(api_key=API_KEY)
-    st.sidebar.success("✅ API Key configurada")
-except Exception as e:
-    st.sidebar.error(f"❌ Error API Key: {e}")
 
 # Configuración de página
 st.set_page_config(page_title="Sistema Climático SMA", page_icon="🏔️", layout="wide")
@@ -73,11 +65,22 @@ st.markdown("""
         border-left: 4px solid #4CAF50;
         margin: 5px 0;
     }
+    .warning-box {
+        background-color: #332200;
+        padding: 15px;
+        border-radius: 8px;
+        border-left: 4px solid #ffaa00;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Título principal
 st.markdown('<div class="main-header"><h1>🏔️ Sistema de Fusión Meteorológica SMA</h1><p>Ponderación 40/60: AIC+SMN (40%) + Open-Meteo (60%)</p></div>', unsafe_allow_html=True)
+
+# ============================================================================
+# 2. CONFIGURACIÓN DE API KEY (SEGURA)
+# ============================================================================
 
 # Sidebar con configuración
 with st.sidebar:
@@ -87,13 +90,60 @@ with st.sidebar:
     fecha_base = st.date_input("Fecha de inicio", datetime.now().date())
     
     st.markdown("---")
-    st.header("🤖 Configuración IA")
+    st.header("🔑 Configuración IA")
     
-    # Selección de modelo
-    modelo_seleccionado = st.selectbox(
-        "Modelo Gemini",
-        ["gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro", "models/gemini-pro"]
+    # Opciones para API Key (múltiples formas seguras)
+    api_key_option = st.radio(
+        "Fuente de API Key:",
+        ["Streamlit Secrets", "Ingresar manualmente", "Sin IA (solo datos)"]
     )
+    
+    api_key = None
+    
+    if api_key_option == "Streamlit Secrets":
+        try:
+            # Intentar obtener de secrets (forma segura)
+            api_key = st.secrets["GOOGLE_API_KEY"]
+            st.success("✅ API Key cargada desde secrets")
+        except:
+            st.warning("⚠️ No se encontró GOOGLE_API_KEY en secrets")
+            st.info("Agrega tu API Key en: Configuración → Secrets de Streamlit")
+    
+    elif api_key_option == "Ingresar manualmente":
+        # Input temporal (solo para desarrollo)
+        api_key = st.text_input("Google API Key", type="password")
+        if api_key:
+            st.warning("⚠️ ADVERTENCIA: No expongas tu API Key en producción")
+    
+    elif api_key_option == "Sin IA (solo datos)":
+        st.info("📊 Solo se mostrarán los datos crudos")
+    
+    # Configurar Gemini si hay API Key
+    if api_key:
+        try:
+            genai.configure(api_key=api_key)
+            st.success("✅ Gemini configurado")
+            
+            # Intentar listar modelos disponibles
+            try:
+                models = genai.list_models()
+                model_names = [model.name for model in models]
+                
+                # Filtrar modelos de generación
+                available_models = []
+                for model in model_names:
+                    if 'generateContent' in model.supported_generation_methods:
+                        available_models.append(model.name)
+                
+                if available_models:
+                    st.write(f"**Modelos disponibles ({len(available_models)}):**")
+                    for model in available_models[:5]:  # Mostrar primeros 5
+                        st.caption(f"• {model.split('/')[-1]}")
+            except:
+                st.info("No se pudieron listar modelos")
+                
+        except Exception as e:
+            st.error(f"❌ Error configurando Gemini: {e}")
     
     st.markdown("---")
     st.info("""
@@ -101,19 +151,15 @@ with st.sidebar:
     - 40%: Fuentes locales (AIC + SMN)
     - 60%: Modelos globales (Open-Meteo)
     
-    **🎯 Prioridades:**
-    1. Fenómenos locales (tormentas, ráfagas)
-    2. Tendencia térmica precisa
-    3. Alertas de seguridad
-    
-    **🔧 Modelos disponibles:**
-    - gemini-1.5-pro (recomendado)
-    - gemini-1.0-pro
-    - gemini-pro
+    **🔧 Sin API Key?** 
+    El sistema mostrará:
+    1. Datos crudos de todas las fuentes
+    2. Estado de disponibilidad
+    3. Estructura lista para cuando actives la IA
     """)
 
 # ============================================================================
-# 2. FUNCIONES DE EXTRACCIÓN (OPTIMIZADAS)
+# 3. FUNCIONES DE EXTRACCIÓN (MANTENIDAS)
 # ============================================================================
 
 def obtener_datos_aic():
@@ -219,7 +265,7 @@ def obtener_datos_smn():
                 archivos = zip_file.namelist()
                 estructura["archivos"] = archivos
                 
-                # Buscar archivo TXT (puede tener nombre dinámico)
+                # Buscar archivo TXT
                 txt_files = [f for f in archivos if f.lower().endswith('.txt')]
                 
                 if txt_files:
@@ -228,7 +274,7 @@ def obtener_datos_smn():
                         contenido = f.read().decode('utf-8', errors='ignore')
                     
                     estructura["archivo_txt"] = archivo_txt
-                    estructura["contenido_preview"] = contenido[:1000] + "..." if len(contenido) > 1000 else contenido
+                    estructura["contenido_preview"] = contenido[:1000]
                     
                     # Buscar CHAPELCO
                     if 'CHAPELCO' in contenido.upper():
@@ -299,175 +345,145 @@ def obtener_datos_openmeteo():
         return {}, False, f"❌ Error Open-Meteo: {str(e)}"
 
 # ============================================================================
-# 3. FUNCIÓN DE IA MEJORADA (CON MÁS MODELOS Y MEJOR MANEJO)
+# 4. FUNCIÓN DE IA CON DETECCIÓN DE MODELOS
 # ============================================================================
 
+def detectar_modelos_disponibles():
+    """Detecta automáticamente los modelos de Gemini disponibles"""
+    
+    modelos_prueba = [
+        "gemini-1.5-pro",      # Última versión
+        "gemini-1.0-pro",      # Versión estable
+        "gemini-pro",          # Alias común
+        "models/gemini-pro",   # Ruta completa
+        "gemini-1.5-flash",    # Versión rápida
+        "gemini-1.0-pro-001",  # Versión específica
+    ]
+    
+    modelos_funcionales = []
+    
+    for modelo in modelos_prueba:
+        try:
+            # Crear instancia temporal
+            temp_model = genai.GenerativeModel(modelo)
+            
+            # Intentar una consulta simple
+            response = temp_model.generate_content("Test")
+            
+            if response.text:
+                modelos_funcionales.append(modelo)
+                st.sidebar.success(f"✅ {modelo} funciona")
+            else:
+                st.sidebar.warning(f"⚠️ {modelo} no respondió")
+                
+        except Exception as e:
+            st.sidebar.error(f"❌ {modelo}: {str(e)[:50]}")
+            continue
+    
+    return modelos_funcionales
+
 def generar_sintesis_ia(datos_aic, datos_smn, datos_om, fuentes_activas):
-    """Genera síntesis con IA - Versión mejorada"""
+    """Genera síntesis con IA - Con detección de modelos"""
     
     try:
-        # Preparar prompt detallado
+        # Preparar prompt
         fecha_str = fecha_base.strftime('%A %d de %B %Y')
         
         # Formatear datos AIC
         aic_texto = "No disponible"
         if datos_aic:
             aic_lines = []
-            for d in datos_aic[:6]:  # Primeros 6 registros (3 días)
-                aic_lines.append(f"- {d['Fecha']} ({d['Momento']}): {d['Cielo']}. Temp: {d['Temp']}°C. Viento: {d['Viento']} km/h. Ráfagas: {d['Ráfagas']} km/h")
+            for d in datos_aic[:6]:
+                aic_lines.append(f"- {d['Fecha']} ({d['Momento']}): {d['Cielo']}. Temp: {d['Temp']}°C. Viento: {d['Viento']} km/h")
             aic_texto = "\n".join(aic_lines)
         
         # Formatear datos SMN
         smn_texto = "No disponible"
         if datos_smn and datos_smn.get('chapelco_encontrado'):
-            smn_texto = datos_smn.get('seccion_chapelco', 'Datos Chapelco disponibles')[:500]
+            smn_texto = "Datos de Chapelco disponibles (estructura preparada)"
         
         # Formatear datos Open-Meteo
         om_texto = "No disponible"
         if datos_om:
             om_lines = []
             for fecha, vals in list(datos_om.items())[:3]:
-                # Interpretar weathercode
-                wcode = vals.get('weathercode', 0)
-                condicion = interpretar_weathercode(wcode)
-                
-                om_lines.append(f"- {fecha}: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C. {condicion}. Precip: {vals.get('precip', 0):.1f}mm. Viento: {vals.get('viento_max', 0):.1f} km/h")
+                om_lines.append(f"- {fecha}: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C. Precip: {vals.get('precip', 0):.1f}mm")
             om_texto = "\n".join(om_lines)
         
-        # Crear prompt detallado
         prompt = f"""
-        # SÍNTESIS METEOROLÓGICA PROFESIONAL - SAN MARTÍN DE LOS ANDES
-        ## FECHA: {fecha_str}
+        SÍNTESIS METEOROLÓGICA - SAN MARTÍN DE LOS ANDES
+        Fecha: {fecha_str}
         
-        ## 📊 FUENTES DISPONIBLES:
-        - **AIC (Pronóstico Oficial Argentina):** {'✅ ACTIVA' if fuentes_activas['AIC'] else '❌ INACTIVA'}
-        - **SMN Chapelco (Datos Estación):** {'✅ ACTIVA' if fuentes_activas['SMN'] and datos_smn.get('chapelco_encontrado') else '⚠️ ESTRUCTURA' if fuentes_activas['SMN'] else '❌ INACTIVA'}
-        - **Open-Meteo (Modelos Globales):** {'✅ ACTIVA' if fuentes_activas['OM'] else '❌ INACTIVA'}
+        FUENTES:
+        - AIC: {'✅' if fuentes_activas['AIC'] else '❌'}
+        - SMN: {'✅' if fuentes_activas['SMN'] and datos_smn.get('chapelco_encontrado') else '⚠️' if fuentes_activas['SMN'] else '❌'}
+        - Open-Meteo: {'✅' if fuentes_activas['OM'] else '❌'}
         
-        ## 📋 DATOS CRUDOS POR FUENTE:
-        
-        ### A. AIC - PRONÓSTICO OFICIAL:
+        DATOS AIC:
         {aic_texto}
         
-        ### B. SMN - DATOS CHAPELCO:
-        {smn_texto}
-        
-        ### C. OPEN-METEO - MODELOS GLOBALES:
+        DATOS OPEN-METEO:
         {om_texto}
         
-        ## ⚖️ INSTRUCCIONES DE PONDERACIÓN 40/60:
-        
-        ### 1. ESTRATEGIA DE FUSIÓN:
-        - **40% PESO:** Fuentes locales (AIC + SMN combinados)
-        - **60% PESO:** Modelos Open-Meteo (tendencia térmica)
-        
-        ### 2. REGLAS DE DECISIÓN:
-        a) **TEMPERATURAS:** 
-           - Si AIC tiene datos: usar 40% AIC + 60% Open-Meteo
-           - Si solo Open-Meteo: usar 100% Open-Meteo
-           
-        b) **FENÓMENOS ESPECÍFICOS:**
-           - Tormentas eléctricas: priorizar AIC si reporta
-           - Ráfagas > 30 km/h: priorizar AIC/SMN
-           - Precipitación: promedio ponderado
-           
-        c) **CONDICIONES DEL CIELO:**
-           - Usar descripción de AIC si disponible
-           - Complementar con weathercode de Open-Meteo
-        
-        ### 3. FORMATO DE SALIDA REQUERIDO:
-        [Emoji representativo] **DÍA (Fecha)** – San Martín de los Andes: [Descripción concisa de condiciones].
-        
-        **🌡️ Temperaturas:** Máxima de [temp_max]°C, mínima de [temp_min]°C.
-        **💨 Viento:** [viento_prom] km/h con ráfagas de [rafaga_max] km/h desde [direccion].
-        **📊 Presión:** [presion] hPa.
-        
-        [Solo si aplica] ⚡ **ALERTA:** [Mencionar si hay tormentas eléctricas, ráfagas fuertes >45 km/h, o temperaturas extremas]
-        
-        ### 4. RESTRICCIONES ESTRICTAS:
-        - NO inventar datos no respaldados por las fuentes
-        - Si falta una fuente, ajustar la ponderación proporcionalmente
-        - Máximo 3 días de pronóstico detallado
-        - Lenguaje natural pero técnicamente preciso
-        - Incluir hashtags: #SanMartínDeLosAndes #ClimaSMA #PronósticoFusionado
-        
-        ## 🎯 GENERA LA SÍNTESIS METEOROLÓGICA FINAL:
+        Genera un pronóstico conciso para 3 días usando ponderación 40/60 (40% fuentes locales, 60% modelos).
+        Formato: [Día] - [condiciones]. Temp: [mín]°C/[máx]°C. Viento: [velocidad] km/h.
+        Solo datos reales, no inventar.
         """
         
-        # Lista de modelos a probar (en orden de preferencia)
-        modelos_a_probar = [
-            modelo_seleccionado,  # El seleccionado en el sidebar
-            "gemini-1.5-pro",
-            "gemini-1.0-pro",
-            "gemini-pro",
-            "models/gemini-pro"
-        ]
+        # Detectar modelos disponibles
+        modelos_disponibles = detectar_modelos_disponibles()
         
-        for modelo in modelos_a_probar:
+        if not modelos_disponibles:
+            st.error("❌ No hay modelos de Gemini disponibles")
+            return None, None
+        
+        st.info(f"🔍 Modelos detectados: {', '.join(modelos_disponibles)}")
+        
+        # Probar cada modelo
+        for modelo in modelos_disponibles:
             try:
-                st.write(f"🔍 Probando modelo: {modelo}")
+                st.write(f"🔄 Probando: {modelo}")
                 model = genai.GenerativeModel(modelo)
                 
-                # Configurar parámetros de generación
+                # Configuración conservadora
                 generation_config = {
-                    "temperature": 0.2,  # Baja temperatura para respuestas consistentes
+                    "temperature": 0.3,
                     "top_p": 0.8,
                     "top_k": 40,
-                    "max_output_tokens": 1500,
+                    "max_output_tokens": 800,
                 }
                 
                 response = model.generate_content(
                     prompt,
-                    generation_config=generation_config
+                    generation_config=generation_config,
+                    safety_settings=[
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                    ]
                 )
                 
-                if response.text and len(response.text.strip()) > 100:
+                if response.text and len(response.text.strip()) > 50:
+                    st.success(f"✅ {modelo} funcionó")
                     return response.text, modelo
                     
             except Exception as e:
-                st.warning(f"Modelo {modelo} falló: {str(e)[:100]}")
+                st.warning(f"❌ {modelo} falló: {str(e)[:80]}")
                 continue
         
-        # Si todos los modelos fallan
         return None, None
         
     except Exception as e:
-        st.error(f"❌ Error crítico en IA: {str(e)}")
+        st.error(f"❌ Error en IA: {str(e)}")
         return None, None
 
-def interpretar_weathercode(code):
-    """Interpreta los códigos de weathercode de Open-Meteo"""
-    codigos = {
-        0: "Cielo despejado",
-        1: "Mayormente despejado",
-        2: "Parcialmente nublado",
-        3: "Nublado",
-        45: "Niebla",
-        48: "Niebla helada",
-        51: "Llovizna ligera",
-        53: "Llovizna moderada",
-        55: "Llovizna densa",
-        61: "Lluvia ligera",
-        63: "Lluvia moderada",
-        65: "Lluvia intensa",
-        71: "Nieve ligera",
-        73: "Nieve moderada",
-        75: "Nieve intensa",
-        80: "Chubascos ligeros",
-        81: "Chubascos moderados",
-        82: "Chubascos intensos",
-        95: "Tormenta eléctrica",
-        96: "Tormenta con granizo ligero",
-        99: "Tormenta con granizo intenso"
-    }
-    return codigos.get(code, f"Código {code}")
-
 # ============================================================================
-# 4. INTERFAZ PRINCIPAL MEJORADA
+# 5. INTERFAZ PRINCIPAL MEJORADA
 # ============================================================================
 
-# Botón principal de ejecución
-if st.button("🚀 EJECUTAR SÍNTESIS COMPLETA CON IA", type="primary", use_container_width=True):
+# Botón principal
+if st.button("🚀 EJECUTAR SISTEMA COMPLETO", type="primary", use_container_width=True):
     
     # Inicializar estados
     fuentes_activas = {"AIC": False, "SMN": False, "OM": False}
@@ -482,81 +498,67 @@ if st.button("🚀 EJECUTAR SÍNTESIS COMPLETA CON IA", type="primary", use_cont
     # EXTRACCIÓN DE DATOS
     # ========================================
     
-    with st.spinner("📡 Extrayendo datos de todas las fuentes..."):
-        # AIC
-        status_text.text("📊 Extrayendo AIC...")
+    with st.spinner("📡 Extrayendo datos..."):
+        status_text.text("📊 AIC...")
         datos_aic, fuentes_activas["AIC"], mensajes["AIC"] = obtener_datos_aic()
         progress_bar.progress(30)
         
-        # SMN
-        status_text.text("⏰ Extrayendo SMN...")
+        status_text.text("⏰ SMN...")
         datos_smn, fuentes_activas["SMN"], mensajes["SMN"] = obtener_datos_smn()
         progress_bar.progress(60)
         
-        # Open-Meteo
-        status_text.text("🛰️ Extrayendo Open-Meteo...")
+        status_text.text("🛰️ Open-Meteo...")
         datos_om, fuentes_activas["OM"], mensajes["OM"] = obtener_datos_openmeteo()
         progress_bar.progress(90)
     
     # ========================================
-    # MOSTRAR DATOS INDIVIDUALES
+    # MOSTRAR DATOS
     # ========================================
     
     st.markdown("---")
-    st.subheader("📊 DATOS EXTRAÍDOS POR FUENTE")
+    st.subheader("📊 DATOS EXTRAÍDOS")
     
-    # Mostrar en pestañas
+    # Mostrar en tabs
     tab1, tab2, tab3 = st.tabs(["📄 AIC", "⏰ SMN", "🛰️ Open-Meteo"])
     
     with tab1:
         if datos_aic:
             df_aic = pd.DataFrame(datos_aic)
             st.dataframe(df_aic, hide_index=True, use_container_width=True)
-            
-            # Mostrar ejemplo de parseo correcto
-            st.write("**✅ Ejemplo de datos AIC parseados correctamente:**")
-            if len(datos_aic) >= 2:
-                st.write(f"**{datos_aic[0]['Fecha']} - {datos_aic[0]['Momento']}:** {datos_aic[0]['Cielo']}")
-                st.write(f"**{datos_aic[1]['Fecha']} - {datos_aic[1]['Momento']}:** {datos_aic[1]['Cielo']}")
         else:
-            st.info("No hay datos de AIC disponibles")
+            st.info("Sin datos AIC")
     
     with tab2:
         if datos_smn:
             st.json(datos_smn, expanded=False)
-            
-            if datos_smn.get('chapelco_encontrado'):
-                st.success("✅ CHAPELCO encontrado en el archivo")
-                if 'seccion_chapelco' in datos_smn:
-                    st.text_area("Sección CHAPELCO:", datos_smn['seccion_chapelco'], height=200)
         else:
-            st.info("Estructura SMN preparada, esperando datos completos")
+            st.info("Estructura SMN preparada")
     
     with tab3:
         if datos_om:
-            # Crear tabla resumen
-            resumen_om = []
+            # Tabla resumida
+            resumen = []
             for fecha, vals in datos_om.items():
-                resumen_om.append({
+                resumen.append({
                     'Fecha': fecha,
                     'Máx': f"{vals['t_max']:.1f}°C",
                     'Mín': f"{vals['t_min']:.1f}°C",
                     'Precip': f"{vals.get('precip', 0):.1f} mm",
-                    'Viento': f"{vals.get('viento_max', 0):.1f} km/h",
-                    'Condición': interpretar_weathercode(vals.get('weathercode', 0))
+                    'Viento': f"{vals.get('viento_max', 0):.1f} km/h"
                 })
             
-            df_om = pd.DataFrame(resumen_om)
+            df_om = pd.DataFrame(resumen)
             st.dataframe(df_om, hide_index=True, use_container_width=True)
         else:
-            st.info("No hay datos de Open-Meteo")
+            st.info("Sin datos Open-Meteo")
     
     # ========================================
-    # SÍNTESIS CON IA
+    # SÍNTESIS CON IA (SI HAY API KEY)
     # ========================================
     
-    # Verificar que tenemos datos para síntesis
-    if fuentes_activas["OM"] or fuentes_activas["AIC"]:
+    progress_bar.progress(95)
+    
+    if api_key and (fuentes_activas["OM"] or fuentes_activas["AIC"]):
         with st.spinner("🧠 Generando síntesis con IA..."):
             sintesis, modelo_usado = generar_sintesis_ia(
                 datos_aic, datos_smn, datos_om, fuentes_activas
@@ -567,55 +569,61 @@ if st.button("🚀 EJECUTAR SÍNTESIS COMPLETA CON IA", type="primary", use_cont
         
         if sintesis:
             st.markdown("---")
-            st.subheader("🎯 SÍNTESIS PONDERADA 40/60")
+            st.subheader("🎯 SÍNTESIS CON IA")
             
-            # Mostrar síntesis con estilo
+            # Mostrar síntesis
             st.markdown(f'<div class="forecast-card">{sintesis}</div>', unsafe_allow_html=True)
             
-            # Información del modelo usado
-            st.markdown(f'<div class="model-info">🧠 <strong>Modelo utilizado:</strong> {modelo_usado} | ⚖️ <strong>Ponderación:</strong> 40% Local / 60% Global</div>', unsafe_allow_html=True)
-            
-            # Botón para copiar
-            st.download_button(
-                "📋 Copiar síntesis",
-                sintesis,
-                file_name=f"sintesis_sma_{datetime.now().strftime('%Y%m%d')}.txt",
-                mime="text/plain"
-            )
+            # Info del modelo
+            st.markdown(f'<div class="model-info">🧠 <strong>Modelo:</strong> {modelo_usado}</div>', unsafe_allow_html=True)
         else:
-            st.error("""
-            ❌ No se pudo generar la síntesis con IA. Posibles causas:
+            st.markdown("---")
+            st.subheader("⚠️ SÍNTESIS SIN IA")
             
-            1. **Problemas con la API Key** - Verifica que sea válida
-            2. **Límite de cuota alcanzado** - Espera o usa otra cuenta
-            3. **Modelos no disponibles** - Intenta con otro modelo en el sidebar
+            # Generar síntesis manual básica
+            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+            st.write("**IA no disponible - Datos crudos:**")
             
-            **Solución temporal:** Usa los datos crudos mostrados arriba.
-            """)
+            if datos_om:
+                st.write("**Pronóstico basado en Open-Meteo:**")
+                for fecha, vals in list(datos_om.items())[:3]:
+                    st.write(f"**{fecha}:** {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C")
+            
+            if datos_aic:
+                st.write("**Datos AIC disponibles para fusión manual**")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
     else:
-        st.error("❌ Se requiere al menos Open-Meteo o AIC para generar síntesis")
+        progress_bar.progress(100)
+        status_text.text("✅ Extracción completada")
+        
+        # Mostrar mensaje según disponibilidad
+        if not api_key:
+            st.markdown("---")
+            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+            st.write("**⚠️ IA DESACTIVADA**")
+            st.write("Para activar la síntesis con IA:")
+            st.write("1. Agrega tu API Key en Streamlit Secrets")
+            st.write("2. O ingrésala manualmente en el sidebar")
+            st.write("3. O selecciona 'Sin IA' para solo datos")
+            st.markdown('</div>', unsafe_allow_html=True)
     
     # ========================================
-    # RESUMEN DE FUENTES DISPONIBLES
+    # RESUMEN DE FUENTES
     # ========================================
     
     st.markdown("---")
-    st.subheader("📡 ESTADO DE FUENTES DISPONIBLES")
+    st.subheader("📡 ESTADO DE FUENTES")
     
-    # Mostrar tarjetas de estado
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.markdown('<div class="source-card card-aic">', unsafe_allow_html=True)
         st.markdown("### 📄 AIC")
-        if fuentes_activas["AIC"]:
-            st.success("✅ **ACTIVA**")
-            st.write(f"**Registros:** {len(datos_aic)}")
-            st.write(f"**Días:** {len(set([d['Fecha'] for d in datos_aic]))}")
-            if datos_aic:
-                st.write(f"**Ejemplo:** {datos_aic[0]['Fecha']} - {datos_aic[0]['Temp']}")
-        else:
-            st.error("❌ **INACTIVA**")
+        estado = "✅ ACTIVA" if fuentes_activas["AIC"] else "❌ INACTIVA"
+        st.markdown(f"**{estado}**")
+        if datos_aic:
+            st.write(f"Registros: {len(datos_aic)}")
         st.caption(mensajes["AIC"])
         st.markdown('</div>', unsafe_allow_html=True)
     
@@ -624,81 +632,78 @@ if st.button("🚀 EJECUTAR SÍNTESIS COMPLETA CON IA", type="primary", use_cont
         st.markdown("### ⏰ SMN")
         if fuentes_activas["SMN"]:
             if datos_smn.get('chapelco_encontrado'):
-                st.success("✅ **ACTIVA (CHAPELCO)**")
-                st.write("**Estado:** Datos encontrados")
+                st.success("✅ CON DATOS")
             else:
-                st.warning("⚠️ **ESTRUCTURA**")
-                st.write("**Estado:** Esperando datos")
-            if datos_smn.get('archivo_txt'):
-                st.write(f"**Archivo:** {datos_smn['archivo_txt']}")
+                st.warning("⚠️ ESTRUCTURA")
         else:
-            st.error("❌ **INACTIVA**")
+            st.error("❌ INACTIVA")
         st.caption(mensajes["SMN"])
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col3:
         st.markdown('<div class="source-card card-om">', unsafe_allow_html=True)
         st.markdown("### 🛰️ Open-Meteo")
-        if fuentes_activas["OM"]:
-            st.success("✅ **ACTIVA**")
-            st.write(f"**Días:** {len(datos_om)}")
-            if datos_om:
-                primer_fecha = list(datos_om.keys())[0]
-                st.write(f"**Ejemplo:** {primer_fecha}")
-                st.write(f"Temp: {datos_om[primer_fecha]['t_min']:.1f}°C/{datos_om[primer_fecha]['t_max']:.1f}°C")
-        else:
-            st.error("❌ **INACTIVA**")
+        estado = "✅ ACTIVA" if fuentes_activas["OM"] else "❌ INACTIVA"
+        st.markdown(f"**{estado}**")
+        if datos_om:
+            st.write(f"Días: {len(datos_om)}")
         st.caption(mensajes["OM"])
         st.markdown('</div>', unsafe_allow_html=True)
     
     # Resumen final
     st.markdown("---")
-    fuentes_totales = sum(fuentes_activas.values())
-    fuentes_con_datos = sum([1 for k,v in fuentes_activas.items() if v and (
-        (k == 'AIC' and datos_aic) or 
-        (k == 'SMN' and datos_smn.get('chapelco_encontrado')) or 
-        (k == 'OM' and datos_om)
-    )])
+    fuentes_con_datos = sum([
+        1 if fuentes_activas["AIC"] and datos_aic else 0,
+        1 if fuentes_activas["SMN"] and datos_smn.get('chapelco_encontrado') else 0,
+        1 if fuentes_activas["OM"] and datos_om else 0
+    ])
     
     if fuentes_con_datos >= 2:
-        st.success(f"✅ **{fuentes_con_datos}/{fuentes_totales}** fuentes con datos - Síntesis óptima")
+        st.success(f"✅ **{fuentes_con_datos}/3** fuentes con datos - Sistema operativo")
     elif fuentes_con_datos == 1:
-        st.warning(f"⚠️ **{fuentes_con_datos}/{fuentes_totales}** fuentes con datos - Síntesis básica")
+        st.warning(f"⚠️ **{fuentes_con_datos}/3** fuentes con datos - Datos limitados")
     else:
-        st.error(f"❌ **{fuentes_con_datos}/{fuentes_totales}** fuentes con datos - Sin datos suficientes")
+        st.error(f"❌ **{fuentes_con_datos}/3** fuentes con datos - Sin datos")
 
 # ============================================================================
-# 5. INFORMACIÓN FINAL
+# 6. INFORMACIÓN FINAL
 # ============================================================================
 
 st.markdown("---")
 st.caption(f"""
-**🏔️ Sistema de Fusión Meteorológica SMA v7.0** | 
-Ponderación 40/60 Local/Global | 
-IA: Gemini Pro | 
+**🏔️ Sistema de Fusión Meteorológica SMA v8.0** | 
+Diseñado para Streamlit Cloud | 
 Última actualización: {datetime.now().strftime("%d/%m/%Y %H:%M")}
 """)
 
-# Información en sidebar
+# Instrucciones en sidebar
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
-### 📊 Escenarios soportados:
+### 🚀 Para usar en Streamlit Cloud:
 
-**🎯 Escenario ideal:**
-- AIC ✅ + SMN ✅ + Open-Meteo ✅
-- **Síntesis:** Completa (40/60)
+1. **Agrega tu API Key** en:
+   - Dashboard de tu app
+   - ⚙️ Settings → Secrets
+   - Agrega: `GOOGLE_API_KEY = "tu-key-aqui"`
 
-**⚠️ Escenario básico:**
-- Open-Meteo ✅
-- **Síntesis:** Básica (100% modelos)
+2. **Selecciona** "Streamlit Secrets" en el sidebar
 
-**🔧 Escenario mixto:**
-- Cualquier combinación disponible
-- **Síntesis:** Ajustada automáticamente
+3. **Ejecuta** el sistema
 
-### 🔍 Debug:
-Si la IA falla:
-1. Verifica la API Key
-2. Cambia el modelo en el selector
-3. Revisa la consola para errores
+### 🔧 Solución de problemas:
+
+**API Key no funciona:**
+- Verifica que sea válida
+- Revisa la consola de Streamlit
+- Prueba generando una nueva key
+
+**Modelos no disponibles:**
+- El sistema detecta automáticamente
+- Prueba diferentes modelos
+- Revisa tu cuenta de Google AI
+
+**Sin datos:**
+- Verifica conexión a internet
+- Revisa que las fuentes estén activas
+- Intenta más tarde
 """)
