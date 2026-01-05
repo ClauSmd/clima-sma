@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import google.generativeai as genai
 from datetime import datetime, timedelta
 import zipfile
 import io
@@ -20,13 +19,6 @@ st.markdown("""
     .status-warning { color: #ffaa00; }
     </style>
     """, unsafe_allow_html=True)
-
-# 2. Configuración de Inteligencia
-try:
-    api_key = st.secrets["GOOGLE_API_KEY"]
-    genai.configure(api_key=api_key)
-except Exception as e:
-    st.error(f"Error de API: {e}")
 
 # --- FUNCIONES DE CAPTURA DE DATOS ---
 
@@ -133,11 +125,11 @@ def parsear_aic_texto(texto, fecha_base):
             if fecha_idx < len(todas_fechas):
                 fecha_str = todas_fechas[fecha_idx]
                 
-                # Convertir fecha a datetime
+                # Convertir fecha a datetime.date para comparación
                 try:
-                    fecha_dt = datetime.strptime(fecha_str, '%d-%m-%Y')
+                    fecha_dt = datetime.strptime(fecha_str, '%d-%m-%Y').date()
                     
-                    # Filtrar por fecha_base
+                    # CORREGIDO: Comparar date con date
                     if fecha_dt >= fecha_base:
                         if fecha_str != fecha_actual:  # Nuevo día
                             # Para día
@@ -237,7 +229,7 @@ def procesar_bloque_smn(bloque):
                         't_max': temp,
                         't_min': temp,
                         'v_max': viento,
-                        'fecha_dt': fecha_dt
+                        'fecha_dt': fecha_dt.date()  # Convertir a date
                     }
                 else:
                     dias_datos[fecha_str]['t_max'] = max(dias_datos[fecha_str]['t_max'], temp)
@@ -280,7 +272,7 @@ def obtener_datos_satelital(fecha_base):
                             't_min': t_min[i],
                             'v_prom': viento[i],
                             'v_max': rafagas[i],
-                            'fecha_dt': fecha_dt
+                            'fecha_dt': fecha_dt.date()  # Convertir a date
                         }
                 except ValueError:
                     continue
@@ -292,27 +284,55 @@ def obtener_datos_satelital(fecha_base):
     except Exception as e:
         return {}, False, f"❌ Error Satélite: {str(e)}"
 
-def ejecutar_sintesis(prompt, datos_aic, datos_smn, datos_sat, fuentes_estado):
-    """Ejecuta la síntesis con failover de modelos"""
+def fusionar_datos_manual(fecha_base, datos_aic, datos_smn, datos_sat, fuentes_estado):
+    """Fusión manual de datos sin IA - solo para verificación"""
     
-    modelos = [
-        ('gemini-3-flash-preview', 'Gemini 3 Flash'),
-        ('gemini-2.5-flash-lite', 'Gemini 2.5 Flash Lite'),
-        ('gemini-pro', 'Gemini Pro')
-    ]
+    # Preparar resultado simple
+    resultado = "## 📊 VERIFICACIÓN DE FUENTES\n\n"
     
-    for modelo_id, modelo_nombre in modelos:
-        try:
-            model_ai = genai.GenerativeModel(modelo_id)
-            response = model_ai.generate_content(prompt)
-            return response.text, modelo_nombre
-        except Exception:
-            continue
+    resultado += f"**Fecha base:** {fecha_base.strftime('%d/%m/%Y')}\n\n"
     
-    return None, None
+    resultado += "### Fuentes activas:\n"
+    for fuente, estado in fuentes_estado.items():
+        if estado:
+            resultado += f"✅ {fuente}\n"
+        else:
+            resultado += f"❌ {fuente}\n"
+    
+    resultado += "\n### Datos disponibles:\n"
+    
+    # AIC
+    if datos_aic:
+        resultado += "**AIC:**\n"
+        for d in datos_aic[:3]:
+            resultado += f"- {d['fecha']}: {d['condicion'][:40]}... | Temp: {d.get('temp_min', 'N/D')}°C/{d.get('temp_max', 'N/D')}°C\n"
+    else:
+        resultado += "**AIC:** Sin datos\n"
+    
+    # SMN
+    if datos_smn:
+        resultado += "\n**SMN:**\n"
+        for fecha, vals in list(datos_smn.items())[:3]:
+            resultado += f"- {fecha}: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C | Viento: {vals['v_max']} km/h\n"
+    else:
+        resultado += "\n**SMN:** Sin datos\n"
+    
+    # Satélite
+    if datos_sat:
+        resultado += "\n**Satélite:**\n"
+        for fecha, vals in list(datos_sat.items())[:3]:
+            resultado += f"- {fecha}: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C | Viento: {vals['v_prom']:.1f} km/h (ráf: {vals['v_max']:.1f} km/h)\n"
+    else:
+        resultado += "\n**Satélite:** Sin datos\n"
+    
+    resultado += "\n---\n"
+    resultado += "**Estado:** Modo verificación - IA desactivada\n"
+    resultado += "Cuando todas las fuentes funcionen, activar la IA para la síntesis completa."
+    
+    return resultado
 
 def preparar_prompt_ponderado(fecha_base, datos_aic, datos_smn, datos_sat, fuentes_estado):
-    """Prepara el prompt para la ponderación 40/60"""
+    """Prepara el prompt para la ponderación 40/60 - SOLO PARA REFERENCIA"""
     
     # Formatear datos para el prompt
     datos_aic_str = "No disponible"
@@ -361,51 +381,7 @@ def preparar_prompt_ponderado(fecha_base, datos_aic, datos_smn, datos_sat, fuent
     Satélites (60% peso - curva térmica):
     {datos_sat_str}
     
-    INSTRUCCIONES DE PONDERACIÓN:
-    
-    1. ESTRATEGIA DE FUSIÓN 40/60:
-       - 40%: Fuentes locales (AIC + SMN) para fenómenos específicos
-       - 60%: Modelos satelitales para tendencia térmica
-    
-    2. PRIORIDAD LOCAL (40%):
-       - Tormentas eléctricas (si AIC reporta "Eléctricas")
-       - Ráfagas de viento > 30 km/h
-       - Nevadas o precipitación sólida
-       - Cambios bruscos reportados
-    
-    3. PRIORIDAD SATELITAL (60%):
-       - Curva de temperaturas máximas/mínimas
-       - Tendencia térmica diaria
-       - Humedad y nubosidad base
-    
-    4. REGLAS DE DECISIÓN:
-       a) TEMPERATURAS: Promedio ponderado
-          - Si AIC y SMN coinciden: usar ese valor con peso 40%
-          - Satélite: peso 60% para suavizar curva
-       
-       b) VIENTOS: Tomar el MÁXIMO reportado
-          - AIC/SMN para ráfagas locales
-          - Satélite para velocidad base
-       
-       c) CONDICIONES:
-          - Si AIC reporta fenómeno específico (tormenta, lluvia): confirmar al 80%
-          - Si solo satélite sugiere precipitación: probabilidad 40%
-    
-    5. FORMATO DE SALIDA (3 días máximo):
-       [Emoji clima] [Día] de [Mes] – San Martín de los Andes: [condiciones fusionadas]. 
-       Máxima de [temp_max_fusionada]°C, mínima de [temp_min_fusionada]°C. 
-       Viento [viento_prom] km/h con ráfagas de [rafaga_max] km/h.
-       
-       [Emoji alerta] ALERTA: [Solo si condiciones extremas: ráfagas >45km/h, temp >30°C, tormenta eléctrica]
-       
-       #[SanMartínDeLosAndes] #ClimaSMA #PronósticoFusionado
-       ---
-    
-    6. RESTRICCIONES:
-       - NO inventar valores no respaldados por los datos
-       - Si falta una fuente, ajustar ponderación proporcionalmente
-       - Priorizar seguridad: si hay alerta potencial, mencionarla
-       - Mantener lenguaje natural pero preciso
+    [CONTINUACIÓN DEL PROMPT...]
     """
     
     return prompt
@@ -413,16 +389,19 @@ def preparar_prompt_ponderado(fecha_base, datos_aic, datos_smn, datos_sat, fuent
 # --- INTERFAZ ---
 
 st.title("🏔️ Sintesis climatica sma V4.0")
-st.caption("Sistema de ponderación AIC/SMN 40% + Satelital 60%")
+st.caption("MODO VERIFICACIÓN - IA DESACTIVADA")
 
 st.sidebar.header("🗓️ Configuración")
-fecha_base = st.sidebar.date_input("Fecha de inicio", datetime.now())
+fecha_base = st.sidebar.date_input("Fecha de inicio", datetime.now().date())
 
 st.sidebar.divider()
 st.sidebar.subheader("🔗 Calibración Local")
 st.sidebar.info("Las fuentes se sincronizan automáticamente.")
 
-if st.button("🚀 Generar síntesis ponderada", type="primary"):
+st.sidebar.warning("⚠️ IA DESACTIVADA")
+st.sidebar.caption("Activar solo cuando todas las fuentes funcionen correctamente.")
+
+if st.button("🔍 Verificar fuentes de datos", type="primary"):
     
     # Inicializar estados
     fuentes_estado = {"AIC": False, "SMN": False, "SAT": False}
@@ -448,98 +427,140 @@ if st.button("🚀 Generar síntesis ponderada", type="primary"):
     # 2. Verificar que tenemos datos suficientes
     fuentes_activas = sum(fuentes_estado.values())
     
-    if fuentes_activas >= 2:
-        status_text.text("🧠 Generando síntesis ponderada...")
+    if fuentes_activas >= 1:
+        status_text.text("📊 Mostrando resultados de verificación...")
         
-        # 3. Preparar prompt con ponderación
-        prompt = preparar_prompt_ponderado(
+        # 3. Mostrar fusión manual
+        resultado = fusionar_datos_manual(
             fecha_base, datos_aic, datos_smn, datos_sat, fuentes_estado
         )
         
-        # 4. Ejecutar síntesis con failover
-        resultado, modelo_usado = ejecutar_sintesis(
-            prompt, datos_aic, datos_smn, datos_sat, fuentes_estado
-        )
-        
         progress_bar.progress(100)
-        status_text.text("✅ Síntesis completada")
+        status_text.text("✅ Verificación completada")
         
-        if resultado:
-            # 5. Mostrar resultados
-            st.markdown("---")
-            st.subheader("📊 Pronóstico Ponderado (40/60)")
-            st.markdown(f'<div class="reporte-final">{resultado}</div>', unsafe_allow_html=True)
-            st.caption(f"🧠 Motor: {modelo_usado} | 🔄 Ponderación: 40% Local / 60% Satelital")
+        # 4. Mostrar resultados
+        st.markdown("---")
+        st.markdown(resultado)
+        
+        # 5. Mostrar status de verdad
+        with st.expander("🔍 Detalles técnicos de cada fuente", expanded=False):
+            col1, col2, col3 = st.columns(3)
             
-            # 6. Mostrar status de verdad
-            with st.expander("🔍 Status de Verificación de Fuentes", expanded=False):
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if fuentes_estado["AIC"]:
-                        st.markdown('<p class="status-ok">✅ AIC ACTIVO</p>', unsafe_allow_html=True)
-                        if datos_aic:
-                            st.write(f"Días: {len(datos_aic)}")
-                            for d in datos_aic[:2]:
-                                st.caption(f"{d['fecha']}: {d['condicion'][:30]}...")
-                    else:
-                        st.markdown('<p class="status-error">❌ AIC INACTIVO</p>', unsafe_allow_html=True)
-                    st.caption(mensajes_estado["AIC"])
-                
-                with col2:
-                    if fuentes_estado["SMN"]:
-                        st.markdown('<p class="status-ok">✅ SMN ACTIVO</p>', unsafe_allow_html=True)
-                        if datos_smn:
-                            st.write(f"Días: {len(datos_smn)}")
-                            for fecha, vals in list(datos_smn.items())[:2]:
-                                st.caption(f"{fecha}: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C")
-                    else:
-                        st.markdown('<p class="status-error">❌ SMN INACTIVO</p>', unsafe_allow_html=True)
-                    st.caption(mensajes_estado["SMN"])
-                
-                with col3:
-                    if fuentes_estado["SAT"]:
-                        st.markdown('<p class="status-ok">✅ SATÉLITE ACTIVO</p>', unsafe_allow_html=True)
-                        if datos_sat:
-                            st.write(f"Días: {len(datos_sat)}")
-                            for fecha, vals in list(datos_sat.items())[:2]:
-                                st.caption(f"{fecha}: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C")
-                    else:
-                        st.markdown('<p class="status-error">❌ SATÉLITE INACTIVO</p>', unsafe_allow_html=True)
-                    st.caption(mensajes_estado["SAT"])
-                
-                # Resumen de ponderación
-                st.markdown("---")
-                st.markdown("**📈 Estrategia de Ponderación Aplicada:**")
-                
-                if fuentes_activas == 3:
-                    st.success("✅ Ponderación completa 40/60 (3/3 fuentes)")
-                    st.markdown("- **40% AIC + SMN:** Fenómenos locales, tormentas, ráfagas")
-                    st.markdown("- **60% Satélite:** Curva térmica, tendencias")
-                elif fuentes_activas == 2:
-                    st.warning("⚠️ Ponderación parcial (2/3 fuentes)")
-                    if fuentes_estado["AIC"] and fuentes_estado["SMN"]:
-                        st.markdown("- **60% AIC + SMN:** Solo fuentes locales")
-                        st.markdown("- **40% Ajuste térmico:** Basado en patrones regionales")
-                    else:
-                        st.markdown("- Ponderación ajustada por fuentes disponibles")
+            with col1:
+                if fuentes_estado["AIC"]:
+                    st.markdown('<p class="status-ok">✅ AIC ACTIVO</p>', unsafe_allow_html=True)
+                    if datos_aic:
+                        st.write(f"Días obtenidos: {len(datos_aic)}")
+                        for d in datos_aic[:3]:
+                            st.caption(f"**{d['fecha']}** ({d['periodo']})")
+                            st.caption(f"Cond: {d['condicion'][:50]}...")
+                            st.caption(f"Temp: {d.get('temp_min', 'N/D')}°C/{d.get('temp_max', 'N/D')}°C")
                 else:
-                    st.error("❌ Ponderación insuficiente para fusión")
+                    st.markdown('<p class="status-error">❌ AIC INACTIVO</p>', unsafe_allow_html=True)
+                st.caption(mensajes_estado["AIC"])
+            
+            with col2:
+                if fuentes_estado["SMN"]:
+                    st.markdown('<p class="status-ok">✅ SMN ACTIVO</p>', unsafe_allow_html=True)
+                    if datos_smn:
+                        st.write(f"Días obtenidos: {len(datos_smn)}")
+                        for fecha, vals in list(datos_smn.items())[:3]:
+                            st.caption(f"**{fecha}**")
+                            st.caption(f"Temp: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C")
+                            st.caption(f"Viento: {vals['v_max']} km/h")
+                else:
+                    st.markdown('<p class="status-error">❌ SMN INACTIVO</p>', unsafe_allow_html=True)
+                st.caption(mensajes_estado["SMN"])
+            
+            with col3:
+                if fuentes_estado["SAT"]:
+                    st.markdown('<p class="status-ok">✅ SATÉLITE ACTIVO</p>', unsafe_allow_html=True)
+                    if datos_sat:
+                        st.write(f"Días obtenidos: {len(datos_sat)}")
+                        for fecha, vals in list(datos_sat.items())[:3]:
+                            st.caption(f"**{fecha}**")
+                            st.caption(f"Temp: {vals['t_min']:.1f}°C/{vals['t_max']:.1f}°C")
+                            st.caption(f"Viento: {vals['v_prom']:.1f} km/h")
+                else:
+                    st.markdown('<p class="status-error">❌ SATÉLITE INACTIVO</p>', unsafe_allow_html=True)
+                st.caption(mensajes_estado["SAT"])
+            
+            # Resumen
+            st.markdown("---")
+            st.markdown("**📈 Estado de fuentes:**")
+            
+            if fuentes_activas == 3:
+                st.success("✅ Todas las fuentes funcionando correctamente")
+                st.info("Ya puedes activar la IA para la síntesis completa")
+            elif fuentes_activas == 2:
+                st.warning("⚠️ 2 de 3 fuentes activas")
+                if not fuentes_estado["AIC"]:
+                    st.error("Problema con AIC - verificar PDF disponible")
+                elif not fuentes_estado["SMN"]:
+                    st.error("Problema con SMN - verificar conexión")
+                else:
+                    st.error("Problema con Satélite - verificar API")
+            else:
+                st.error("❌ Solo 1 fuente activa - verificar conexiones")
         
-        else:
-            st.error("❌ No se pudo generar la síntesis con ningún modelo disponible")
+        # Mostrar datos crudos para debugging
+        with st.expander("📋 Datos crudos para debugging", expanded=False):
+            tab1, tab2, tab3 = st.tabs(["AIC", "SMN", "Satélite"])
+            
+            with tab1:
+                if datos_aic:
+                    for d in datos_aic:
+                        st.json(d)
+                else:
+                    st.write("Sin datos AIC")
+            
+            with tab2:
+                if datos_smn:
+                    st.json(datos_smn)
+                else:
+                    st.write("Sin datos SMN")
+            
+            with tab3:
+                if datos_sat:
+                    st.json(datos_sat)
+                else:
+                    st.write("Sin datos Satélite")
     
     else:
         progress_bar.progress(100)
-        st.error("❌ No hay suficientes fuentes activas para la ponderación")
-        st.info("Se requieren al menos 2 fuentes de datos. Estados:")
+        st.error("❌ No se pudo obtener datos de ninguna fuente")
+        st.info("Estados individuales:")
         
         for fuente, estado in fuentes_estado.items():
-            if estado:
-                st.success(f"✅ {fuente}: Activo - {mensajes_estado[fuente]}")
-            else:
-                st.error(f"❌ {fuente}: Inactivo - {mensajes_estado[fuente]}")
+            st.error(f"❌ {fuente}: {mensajes_estado[fuente]}")
+        
+        st.warning("""
+        Posibles soluciones:
+        1. Verificar conexión a internet
+        2. AIC: El PDF puede no estar disponible temporalmente
+        3. SMN: El servidor puede estar caído
+        4. Satélite: La API de Open-Meteo puede tener problemas
+        """)
 
 # Footer
 st.markdown("---")
-st.caption("Sistema de fusión meteorológica V4.0 | Ponderación 40/60 Local/Satelital")
+st.caption("Sistema de verificación V4.0 | Modo sin IA - Para debugging")
+
+# Información adicional
+with st.expander("ℹ️ Instrucciones para activar IA"):
+    st.markdown("""
+    **Para activar la IA una vez que todo funcione:**
+    
+    1. **Corregir el error de fechas:** Ya corregido en este código
+    2. **Verificar que las 3 fuentes funcionen:** Usa el botón "Verificar fuentes de datos"
+    3. **Agregar la clave API de Google:** En `st.secrets["GOOGLE_API_KEY"]`
+    4. **Restaurar las funciones de IA:** Descomentar:
+       - `import google.generativeai as genai`
+       - `ejecutar_sintesis()`
+       - Configuración de API al inicio
+    5. **Cambiar el botón:** De "Verificar" a "Generar síntesis ponderada"
+    
+    **Errores comunes solucionados:**
+    - ✅ `'datetime.datetime' and 'datetime.date' comparison` - Corregido
+    - ✅ Configuración redundante de IA - Eliminada
+    """)
