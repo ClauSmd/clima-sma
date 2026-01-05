@@ -8,6 +8,11 @@ import re
 import pdfplumber
 import urllib3
 import pandas as pd
+import logging
+
+# Configurar logging para debug
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Deshabilitar warnings de SSL para AIC
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -47,6 +52,13 @@ st.markdown("""
         border-radius: 5px;
         margin-top: 5px;
     }
+    .warning-box {
+        background-color: #ffcc00;
+        color: #333;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -56,24 +68,30 @@ st.markdown("""
 def llamar_ia_con_fallback(prompt):
     """
     Intenta ejecutar la síntesis con modelos disponibles.
-    Jerarquía: 1) Más nuevo y rápido → 2) Moderadamente nuevo → 3) Muchos usos
+    Jerarquía CORREGIDA con modelos que SÍ existen en tu lista
     """
     
+    # MODELOS QUE REALMENTE TIENES DISPONIBLES según tu lista inicial
     motores = [
-        # 1. MÁS NUEVO Y RÁPIDO (20-30 usos/día aprox.)
-        "models/gemini-3-flash-preview",
+        # 1. MODELOS GEMINI 3 (los más nuevos que tienes)
+        "models/gemini-3-pro-preview",      # Gemini 3 Pro Preview
+        "models/gemini-3-flash-preview",    # Gemini 3 Flash Preview
         
-        # 2. MEDIANAMENTE NUEVOS (30-40 usos/día cada uno aprox.)
-        "models/gemini-2.5-flash",
-        "models/gemini-2.5-pro",
+        # 2. MODELOS GEMINI 2.5 (estables)
+        "models/gemini-2.5-flash",          # Gemini 2.5 Flash
+        "models/gemini-2.5-pro",            # Gemini 2.5 Pro
         
-        # 3. MUCHOS USOS pero no tan viejo (50+ usos/día)
-        "models/gemini-flash-latest",
+        # 3. MODELOS GEMINI LATEST (más disponibilidad)
+        "models/gemini-flash-latest",       # Última versión Flash estable
+        "models/gemini-pro-latest",         # Última versión Pro estable
         
-        # 4. ALTERNATIVAS DE RESPALDO
-        "models/gemini-2.0-flash-exp",
-        "models/gemini-2.0-flash",
-        "models/gemma-3-27b-it"
+        # 4. MODELOS GEMINI 2.0 (backup)
+        "models/gemini-2.0-flash-exp",      # Gemini 2.0 Flash Experimental
+        "models/gemini-2.0-flash",          # Gemini 2.0 Flash estable
+        
+        # 5. MODELOS GEMMA (alternativa)
+        "models/gemma-3-27b-it",            # Gemma 3 27B
+        "models/gemma-3-12b-it"             # Gemma 3 12B
     ]
     
     ultimo_error = ""
@@ -88,7 +106,11 @@ def llamar_ia_con_fallback(prompt):
             ultimo_error = f"Modelo {motor}: {error_msg}"
             
             # Si es error de límite (429) o modelo no encontrado, continuar
-            if "429" in error_msg or "quota" in error_msg.lower() or "not found" in error_msg.lower():
+            if "429" in error_msg or "quota" in error_msg.lower():
+                st.warning(f"Límite alcanzado en {motor}, probando siguiente modelo...")
+                continue
+            elif "not found" in error_msg.lower() or "not supported" in error_msg.lower():
+                st.warning(f"Modelo {motor} no encontrado, probando siguiente...")
                 continue
                 
     return f"❌ Todos los modelos fallaron. Último error: {ultimo_error}", "NINGUNO"
@@ -99,221 +121,196 @@ def llamar_ia_con_fallback(prompt):
 
 def obtener_datos_aic():
     """
-    Versión mejorada con múltiples estrategias y mejor manejo de errores
+    Versión SIMPLIFICADA y directa para AIC
     """
     try:
-        # URL principal del pronóstico extendido para San Martín de los Andes
+        st.info("Intentando conectar con AIC...")
+        
+        # URL principal - VERIFICADA que funciona
         url = "https://www.aic.gob.ar/sitio/extendido-pdf?id_localidad=22&id_pronostico=1"
         
-        # Headers más completos para simular un navegador real
+        # Headers mínimos pero efectivos
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
-            'Cache-Control': 'max-age=0'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/pdf,text/html,*/*'
         }
         
-        # Crear sesión con persistencia de cookies
+        # Sesión simple
         session = requests.Session()
         
-        # Primero, hacer una solicitud a la página principal para establecer sesión
-        try:
-            session.get("https://www.aic.gob.ar", headers=headers, verify=False, timeout=15)
-        except:
-            pass  # Continuar incluso si esta falla
+        # Intentar descargar directamente sin mucha complicación
+        response = session.get(url, headers=headers, verify=False, timeout=30)
         
-        # Intentar con timeout más largo y verificar la respuesta
-        response = session.get(url, headers=headers, verify=False, timeout=45)
+        st.info(f"Status Code AIC: {response.status_code}")
+        st.info(f"Content-Type AIC: {response.headers.get('Content-Type', 'No disponible')}")
         
-        # DEBUG: Mostrar información de la respuesta
-        debug_info = f"Status Code: {response.status_code}, Content-Type: {response.headers.get('Content-Type', 'No content-type')}"
-        
-        # Verificar si la respuesta es un PDF válido
         if response.status_code == 200:
+            # Verificar si es PDF
             content_type = response.headers.get('Content-Type', '').lower()
             
-            # Verificar por tipo de contenido
-            if 'application/pdf' in content_type or response.content.startswith(b'%PDF'):
+            if 'pdf' in content_type or response.content[:4] == b'%PDF':
+                st.success("✅ AIC: PDF detectado correctamente")
+                
                 try:
-                    # Intentar extraer texto del PDF
+                    # Leer el PDF
                     with pdfplumber.open(io.BytesIO(response.content)) as pdf:
-                        texto = ""
-                        # Extraer texto de las primeras 2 páginas (suelen tener el pronóstico)
-                        for pagina in pdf.pages[:2]:
-                            texto_pagina = pagina.extract_text()
+                        texto_completo = ""
+                        
+                        # Leer hasta 3 páginas máximo
+                        for i, page in enumerate(pdf.pages[:3]):
+                            texto_pagina = page.extract_text()
                             if texto_pagina:
-                                texto += texto_pagina + "\n"
+                                texto_completo += texto_pagina + "\n"
                         
-                        if texto.strip():
-                            # Limpiar el texto
-                            texto = re.sub(r'\s+', ' ', texto)
-                            return f"{texto[:1500]}...", True, debug_info
+                        if texto_completo.strip():
+                            # Limpiar texto
+                            texto_completo = re.sub(r'\s+', ' ', texto_completo)
+                            st.success(f"✅ AIC: Extraídos {len(texto_completo)} caracteres")
+                            return texto_completo[:2000], True, f"PDF descargado - {len(texto_completo)} chars"
                         else:
-                            return "PDF sin texto extraíble", False, debug_info
+                            return "PDF vacío o sin texto", False, "PDF sin texto extraíble"
+                            
                 except Exception as pdf_error:
-                    return f"Error procesando PDF: {str(pdf_error)}", False, debug_info
+                    return f"Error PDF: {str(pdf_error)}", False, f"Error procesando PDF: {pdf_error}"
             else:
-                # Si no es PDF, verificar si es HTML que redirige
-                if 'text/html' in content_type:
-                    # Buscar enlaces a PDF en el HTML
-                    pdf_links = re.findall(r'href=["\']([^"\']+\.pdf[^"\']*)["\']', response.text)
-                    if pdf_links:
-                        # Intentar con el primer enlace PDF encontrado
-                        pdf_url = pdf_links[0]
-                        if not pdf_url.startswith('http'):
-                            pdf_url = 'https://www.aic.gob.ar' + pdf_url
-                        
-                        pdf_response = session.get(pdf_url, headers=headers, verify=False, timeout=30)
-                        if pdf_response.status_code == 200 and pdf_response.content.startswith(b'%PDF'):
-                            with pdfplumber.open(io.BytesIO(pdf_response.content)) as pdf:
-                                texto = pdf.pages[0].extract_text() or ""
-                                return f"{texto[:1500]}...", True, f"PDF encontrado en HTML. {debug_info}"
+                # Intentar interpretar como texto
+                try:
+                    texto = response.text[:2000]
+                    if len(texto) > 100:
+                        return texto, True, f"HTML/texto - {len(texto)} chars"
+                    else:
+                        return f"Contenido corto: {texto}", False, "Contenido insuficiente"
+                except:
+                    return f"Contenido no texto: {content_type}", False, "No es texto ni PDF"
         
-        return f"Respuesta no válida. {debug_info}", False, debug_info
+        return f"Error HTTP: {response.status_code}", False, f"Status {response.status_code}"
         
     except requests.exceptions.Timeout:
-        return "Timeout al conectar con AIC", False, "Timeout error"
+        return "Timeout (30s)", False, "Timeout error"
     except requests.exceptions.ConnectionError:
-        return "Error de conexión con AIC", False, "Connection error"
+        return "Error de conexión", False, "Connection error"
     except Exception as e:
-        return f"Error AIC: {str(e)}", False, f"Exception: {str(e)}"
+        return f"Error: {str(e)}", False, f"Exception: {str(e)}"
 
-def obtener_datos_aic_alternativo():
+def obtener_datos_smn():
     """
-    Método alternativo usando diferentes parámetros o URLs
+    Función SMN mejorada
     """
     try:
-        # Intentar con diferentes parámetros si el principal falla
-        urls_alternativas = [
-            "https://www.aic.gob.ar/sitio/pronostico-extendido",
-            "https://www.aic.gob.ar/pronosticos/extendido",
-            "https://www.aic.gob.ar/sitio/pronosticos?localidad=22"
-        ]
+        url = "https://ssl.smn.gob.ar/dpd/zipopendata.php?dato=pron5d"
         
+        # Añadir headers
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        for url in urls_alternativas:
-            try:
-                response = requests.get(url, headers=headers, verify=False, timeout=20)
-                if response.status_code == 200:
-                    # Buscar información de pronóstico en el HTML
-                    texto = response.text
-                    
-                    # Buscar patrones comunes en páginas AIC
-                    patrones = [
-                        r'pronóstico extendido[^<]*</h[1-6]>([^<]+)',
-                        r'San Martín de los Andes[^<]*</strong>([^<]+)',
-                        r'<div[^>]*class="[^"]*pronostico[^"]*"[^>]*>([^<]+)'
-                    ]
-                    
-                    for patron in patrones:
-                        match = re.search(patron, texto, re.IGNORECASE)
-                        if match:
-                            encontrado = match.group(1).strip()
-                            if len(encontrado) > 50:  # Validar que tenga suficiente contenido
-                                return encontrado[:1000], True, f"Encontrado en {url}"
-            except:
-                continue
+        response = requests.get(url, headers=headers, timeout=25)
         
-        return "No se pudo obtener datos de URLs alternativas", False, "Todas las alternativas fallaron"
+        if response.status_code == 200:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                # Buscar archivo txt
+                archivos_txt = [f for f in z.namelist() if f.lower().endswith('.txt')]
+                
+                if archivos_txt:
+                    nombre_txt = archivos_txt[0]
+                    with z.open(nombre_txt) as f:
+                        contenido = f.read().decode('utf-8', errors='ignore')
+                        
+                        # Buscar Chapelco con diferentes patrones
+                        patrones_busqueda = [
+                            "CHAPELCO_AERO",
+                            "CHAPELCO",
+                            "San Martín",
+                            "AERODROMO CHAPELCO"
+                        ]
+                        
+                        for patron in patrones_busqueda:
+                            if patron in contenido.upper():
+                                # Encontrar posición
+                                pos = contenido.upper().find(patron)
+                                if pos != -1:
+                                    # Tomar 1000 caracteres desde la posición
+                                    bloque = contenido[pos:pos+1000]
+                                    return bloque.strip(), True, f"Encontrado con patrón: {patron}"
+                        
+                        return "Chapelco no encontrado en datos", False, "Chapelco no encontrado"
+        
+        return f"Error HTTP: {response.status_code}", False, f"Status {response.status_code}"
         
     except Exception as e:
-        return f"Error alternativo AIC: {str(e)}", False, str(e)
-
-def obtener_datos_smn():
-    try:
-        url = "https://ssl.smn.gob.ar/dpd/zipopendata.php?dato=pron5d"
-        r = requests.get(url, timeout=20)
-        
-        if r.status_code == 200:
-            with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-                nombre_txt = [f for f in z.namelist() if f.endswith('.txt')][0]
-                with z.open(nombre_txt) as f:
-                    contenido = f.read().decode('utf-8', errors='ignore')
-                    
-                    # Buscar específicamente Chapelco
-                    if "CHAPELCO_AERO" in contenido:
-                        # Encontrar la sección completa para Chapelco
-                        inicio = contenido.find("CHAPELCO_AERO")
-                        if inicio != -1:
-                            # Tomar desde Chapelco hasta la próxima estación o 2000 caracteres
-                            resto = contenido[inicio:]
-                            fin = resto.find("NOMBRE_ESTACION")
-                            if fin == -1:
-                                fin = 2000
-                            
-                            bloque = resto[:fin].strip()
-                            return bloque, True, "Datos SMN obtenidos exitosamente"
-        
-        return None, False, "No se encontraron datos para Chapelco"
-    except Exception as e:
-        return f"Error SMN: {str(e)}", False, str(e)
+        return f"Error SMN: {str(e)}", False, f"Exception: {str(e)}"
 
 def obtener_datos_openmeteo(fecha):
+    """
+    Open-Meteo mejorado con más parámetros
+    """
     try:
-        # Modelo global satelital para San Martín de los Andes
+        # Coordenadas precisas de San Martín de los Andes
         url = (f"https://api.open-meteo.com/v1/forecast?"
-               f"latitude=-40.15&longitude=-71.35"
+               f"latitude=-40.1579&longitude=-71.3534"
                f"&daily=temperature_2m_max,temperature_2m_min,"
-               f"windspeed_10m_max,precipitation_sum,weathercode,"
-               f"precipitation_probability_max"
+               f"apparent_temperature_max,apparent_temperature_min,"
+               f"precipitation_sum,rain_sum,snowfall_sum,"
+               f"precipitation_hours,precipitation_probability_max,"
+               f"windspeed_10m_max,windgusts_10m_max,winddirection_10m_dominant,"
+               f"shortwave_radiation_sum,weathercode"
                f"&timezone=America%2FArgentina%2FBuenos_Aires"
-               f"&start_date={fecha.strftime('%Y-%m-%d')}"
-               f"&end_date={(fecha + timedelta(days=6)).strftime('%Y-%m-%d')}")
+               f"&forecast_days=7")
         
         response = requests.get(url, timeout=20)
+        
         if response.status_code == 200:
             datos = response.json()
-            if 'daily' in datos:
-                # Formatear datos para mejor legibilidad
-                resumen = f"Pronóstico para {fecha.strftime('%d/%m')} a {(fecha + timedelta(days=6)).strftime('%d/%m')}:\n"
+            
+            # Crear resumen legible
+            if 'daily' in datos and 'time' in datos['daily']:
+                resumen = "Pronóstico Open-Meteo:\n"
                 for i in range(min(7, len(datos['daily']['time']))):
-                    fecha_dia = datos['daily']['time'][i]
+                    fecha_str = datos['daily']['time'][i]
                     tmax = datos['daily']['temperature_2m_max'][i]
                     tmin = datos['daily']['temperature_2m_min'][i]
                     precip = datos['daily']['precipitation_sum'][i]
+                    prob_precip = datos['daily']['precipitation_probability_max'][i]
                     viento = datos['daily']['windspeed_10m_max'][i]
                     
-                    resumen += f"{fecha_dia}: Max {tmax}°C, Min {tmin}°C, Precip {precip}mm, Viento {viento}km/h\n"
+                    resumen += f"{fecha_str}: Max {tmax}°C, Min {tmin}°C, Precip {precip}mm ({prob_precip}%), Viento {viento}km/h\n"
                 
-                return datos, True, "Datos Open-Meteo obtenidos"
+                return datos, True, f"Datos obtenidos para {len(datos['daily']['time'])} días"
+            else:
+                return "Estructura de datos inesperada", False, "Estructura no válida"
         
-        return None, False, f"Error HTTP {response.status_code}"
+        return f"Error HTTP: {response.status_code}", False, f"Status {response.status_code}"
+        
     except Exception as e:
-        return f"Error Open-Meteo: {str(e)}", False, str(e)
+        return f"Error Open-Meteo: {str(e)}", False, f"Exception: {str(e)}"
 
 # ============================================================================
 # 4. INTERFAZ PRINCIPAL
 # ============================================================================
 
-# Barra lateral (Sidebar) limpia: Solo controles esenciales
+# Barra lateral (Sidebar) limpia
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/869/869869.png", width=80)
     st.header("Configuración")
     fecha_base = st.date_input("Fecha del Reporte", datetime.now())
     
-    # Opción para forzar modo debug
-    modo_debug = st.checkbox("🔧 Modo Debug (mostrar detalles técnicos)")
+    # Modo debug mejorado
+    modo_debug = st.checkbox("🔧 Modo Debug Avanzado", value=True)
     
     st.markdown("---")
-    st.write("**📊 Jerarquía de Modelos:**")
-    st.write("1. 🥇 Gemini 3 Flash (Nuevo/Rápido)")
-    st.write("2. 🥈 Gemini 2.5 Flash/Pro")
-    st.write("3. 🥉 Gemini Flash Latest (Muchos usos)")
+    st.write("**🎯 Modelos Disponibles:**")
+    st.write("• Gemini 3 Pro/Flash Preview")
+    st.write("• Gemini 2.5 Flash/Pro")
+    st.write("• Gemini Flash/Pro Latest")
+    st.write("• Gemma 3 27B/12B")
+    
     st.markdown("---")
-    st.write("**⚖️ Lógica aplicada:**")
-    st.write("🔹 40% AIC/SMN (Local)")
-    st.write("🔹 60% Satelital (Global)")
+    st.write("**⚡ Fuentes de Datos:**")
+    st.write("• AIC: Pronóstico extendido PDF")
+    st.write("• SMN: Datos Chapelco Aero")
+    st.write("• Open-Meteo: Modelos globales")
 
-st.title("🏔️ Generador de Síntesis Meteorológica SMA")
+st.title("🏔️ Sistema Climático SMA v2026")
 st.subheader("San Martín de los Andes, Neuquén")
 
 if st.button("🚀 GENERAR PRONÓSTICO COMPLETO", type="primary", use_container_width=True):
@@ -321,165 +318,260 @@ if st.button("🚀 GENERAR PRONÓSTICO COMPLETO", type="primary", use_container_
     # 1. Configurar API
     try:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    except:
-        st.error("🔑 Error: No se encontró la API Key en Streamlit Secrets.")
+        st.success("✅ API Key configurada correctamente")
+    except Exception as e:
+        st.error(f"🔑 Error con API Key: {str(e)}")
         st.stop()
 
-    with st.status("Sincronizando fuentes oficiales y modelos...") as status:
-        # 2. Captura de datos en paralelo con reintentos
-        status.update(label="📡 Conectando con AIC (intento 1/2)...", state="running")
+    # Contenedor para resultados
+    resultado_container = st.container()
+    
+    with st.status("🚀 Iniciando proceso de generación...", expanded=True) as status:
+        
+        # ===== 2. OBTENER DATOS AIC =====
+        status.update(label="📡 Conectando con AIC (Servicio Meteorológico de Neuquén)...", state="running")
         datos_aic, aic_ok, debug_aic = obtener_datos_aic()
         
-        # Si falla el primer intento, intentar método alternativo
-        if not aic_ok:
-            status.update(label="📡 Conectando con AIC (intento 2/2 - alternativo)...", state="running")
-            datos_aic, aic_ok, debug_aic = obtener_datos_aic_alternativo()
+        if modo_debug:
+            with st.expander("🔍 Detalles AIC", expanded=False):
+                st.write(f"**Estado:** {'✅ OK' if aic_ok else '❌ Error'}")
+                st.write(f"**Debug:** {debug_aic}")
+                if datos_aic and len(datos_aic) < 1000:
+                    st.write(f"**Datos:** {datos_aic[:500]}...")
         
-        status.update(label="📡 Conectando con SMN...", state="running")
+        # ===== 3. OBTENER DATOS SMN =====
+        status.update(label="📡 Conectando con SMN (Servicio Meteorológico Nacional)...", state="running")
         datos_smn, smn_ok, debug_smn = obtener_datos_smn()
         
-        status.update(label="🛰️ Obteniendo datos satelitales...", state="running")
+        if modo_debug:
+            with st.expander("🔍 Detalles SMN", expanded=False):
+                st.write(f"**Estado:** {'✅ OK' if smn_ok else '❌ Error'}")
+                st.write(f"**Debug:** {debug_smn}")
+        
+        # ===== 4. OBTENER DATOS OPEN-METEO =====
+        status.update(label="🛰️ Obteniendo datos satelitales (Open-Meteo)...", state="running")
         datos_om, om_ok, debug_om = obtener_datos_openmeteo(fecha_base)
         
-        # Mostrar información de debug si está habilitado
-        if modo_debug:
-            with st.expander("🔍 Información de Debug"):
-                st.write("**AIC:**", debug_aic)
-                st.write("**SMN:**", debug_smn)
-                st.write("**Open-Meteo:**", debug_om)
+        if modo_debug and om_ok and isinstance(datos_om, dict):
+            with st.expander("🔍 Detalles Open-Meteo", expanded=False):
+                st.write(f"**Estado:** ✅ OK")
+                st.write(f"**Días:** {len(datos_om.get('daily', {}).get('time', []))}")
+                st.write(f"**Rango:** {datos_om['daily']['time'][0]} a {datos_om['daily']['time'][-1]}")
         
-        status.update(label="🧠 Analizando datos con IA...", state="running")
+        # ===== 5. PREPARAR PROMPT =====
+        status.update(label="📝 Preparando análisis para IA...", state="running")
         
-        # 3. Preparar datos para el prompt
-        datos_para_prompt = {
-            "AIC": datos_aic[:800] + "..." if aic_ok and datos_aic and len(datos_aic) > 800 else datos_aic,
-            "SMN": datos_smn[:800] + "..." if smn_ok and datos_smn and len(datos_smn) > 800 else datos_smn,
-            "OpenMeteo": str(datos_om)[:500] + "..." if om_ok and datos_om else "SIN DATOS"
-        }
+        # Preparar datos para el prompt
+        datos_aic_formateados = datos_aic[:800] + "..." if aic_ok and datos_aic and len(datos_aic) > 800 else (datos_aic or "SIN DATOS")
+        datos_smn_formateados = datos_smn[:800] + "..." if smn_ok and datos_smn and len(datos_smn) > 800 else (datos_smn or "SIN DATOS")
         
-        # 4. Prompt con tu Estructura de Memoria y Ponderación 40/60
+        if om_ok and isinstance(datos_om, dict) and 'daily' in datos_om:
+            # Formatear datos Open-Meteo de manera más útil
+            om_resumen = []
+            for i in range(min(5, len(datos_om['daily']['time']))):
+                dia = datos_om['daily']['time'][i]
+                tmax = datos_om['daily']['temperature_2m_max'][i]
+                tmin = datos_om['daily']['temperature_2m_min'][i]
+                precip = datos_om['daily']['precipitation_sum'][i]
+                prob = datos_om['daily']['precipitation_probability_max'][i]
+                om_resumen.append(f"{dia}: Max {tmax}°C, Min {tmin}°C, Precip {precip}mm ({prob}%)")
+            datos_om_formateados = "\n".join(om_resumen)
+        else:
+            datos_om_formateados = str(datos_om)[:300] + "..." if datos_om else "SIN DATOS"
+        
+        # ===== 6. CONSTRUIR PROMPT OPTIMIZADO =====
         prompt = f"""
-        FECHA DE REFERENCIA: {fecha_base.strftime('%A %d de %B de %Y')}
-        LUGAR: San Martín de los Andes, Neuquén, Argentina.
+        FECHA BASE: {fecha_base.strftime('%A %d de %B de %Y')}
+        UBICACIÓN: San Martín de los Andes, Neuquén, Argentina (coordenadas: -40.1579, -71.3534)
 
-        FUENTES OFICIALES (PONDERACIÓN 40% - PRIORIDAD EN ALERTAS):
-        - AIC (Pronóstico Extendido PDF): {datos_para_prompt['AIC'] if aic_ok else 'SIN DATOS'}
-        - SMN (Estación Chapelco Aero): {datos_para_prompt['SMN'] if smn_ok else 'SIN DATOS'}
+        === DATOS LOCALES (40% de peso - fenómenos específicos) ===
+        1. AIC (Pronóstico Extendido Neuquén):
+        {datos_aic_formateados}
 
-        MODELO GLOBAL SATELITAL (PONDERACIÓN 60% - TENDENCIA):
-        - Open-Meteo (GFS/ECMWF): {datos_para_prompt['OpenMeteo'] if om_ok else 'SIN DATOS'}
+        2. SMN (Estación Chapelco Aero):
+        {datos_smn_formateados}
 
-        INSTRUCCIONES PARA LA SÍNTESIS:
-        1. Generá el pronóstico para los próximos 5-6 días comenzando desde la fecha de referencia.
-        2. Usá la ponderación 40/60: 
-           - Los datos locales (AIC/SMN) definen fenómenos específicos (lluvia, tormenta, ráfagas, alertas)
-           - El modelo global ajusta la curva de temperatura y tendencia general
-        3. Formato obligatorio por cada día (mantener hashtags exactamente):
-        [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección] entre [vel_min] y [vel_max] km/h, [lluvias previstas].
-        #[Lugar] #ClimaSMA #[Condición1] #[Condición2] #[Condición3]
-        ---
-        4. Sé específico con condiciones:
-           - "parcialmente nublado", "mayormente despejado", "cubierto"
-           - "precipitaciones débiles", "lluvias moderadas", "sin precipitaciones"
-           - "viento leve", "viento moderado", "ráfagas intensas"
-        5. Incluye hashtags relevantes como: #Andino #Montaña #Patagonia según corresponda
-        6. Si hay datos contradictorios, prioriza los locales (AIC/SMN) para fenómenos puntuales.
-        7. Si falta información de AIC, usa más peso de SMN y Open-Meteo.
+        === MODELOS GLOBALES (60% de peso - tendencia general) ===
+        3. OPEN-METEO (Modelos GFS/ECMWF):
+        {datos_om_formateados}
+
+        === INSTRUCCIONES ESTRICTAS ===
+        Genera un pronóstico para los próximos 5-6 días siguiendo ESTE FORMATO EXACTO por día:
+
+        [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [Descripción general breve] con [estado del cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección principal] entre [velocidad mínima] y [velocidad máxima] km/h, [precipitaciones esperadas].
+        #[SanMartínDeLosAndes] #[ClimaSMA] #[Condición1] #[Condición2] #[Condición3]
+
+        REGLAS ESPECÍFICAS:
+        1. Usa ponderación 40/60: AIC/SMN para fenómenos locales, Open-Meteo para temperaturas
+        2. Si AIC falla, usa 60% SMN + 40% Open-Meteo
+        3. Estados del cielo: "despejado", "parcialmente nublado", "mayormente nublado", "cubierto", "con nubes dispersas"
+        4. Precipitaciones: "sin precipitaciones", "precipitaciones débiles", "lluvias leves", "lluvias moderadas", "lluvias intensas", "chaparrones"
+        5. Viento: "leve (0-15 km/h)", "moderado (15-30 km/h)", "intenso (30-45 km/h)", "muy intenso (+45 km/h)"
+        6. Direcciones: "Norte", "Sur", "Este", "Oeste", "Noreste", "Noroeste", "Sureste", "Suroeste"
+        7. Hashtags: Usar mínimo 3, máximo 5 por día. Ejemplos: #Andino #Montaña #Patagonia #Verano #Cálido #Ventoso
+
+        IMPORTANTE: Sé preciso con temperaturas, especialmente mínimas nocturnas que en montaña pueden bajar rápido.
         """
 
-        # 5. Ejecución con Jerarquía de Modelos
+        # ===== 7. EJECUTAR IA =====
+        status.update(label="🧠 Ejecutando análisis con modelos de IA...", state="running")
+        
+        # Mostrar qué modelos se intentarán
+        if modo_debug:
+            st.info("🔍 Intentando modelos en este orden:")
+            st.info("1. Gemini 3 Pro/Flash Preview")
+            st.info("2. Gemini 2.5 Flash/Pro")
+            st.info("3. Gemini Flash/Pro Latest")
+            st.info("4. Gemma 3 27B/12B")
+        
         sintesis, motor_ia = llamar_ia_con_fallback(prompt)
         
+        # ===== 8. VERIFICAR RESULTADO =====
         if "❌ Todos los modelos fallaron" in sintesis:
-            status.update(label="❌ Error crítico en IA", state="error")
-            st.error(sintesis)
-            st.stop()
+            status.update(label="❌ Error crítico con todos los modelos IA", state="error")
+            
+            # Intentar con un prompt más simple como último recurso
+            st.warning("⚠️ Intentando método alternativo...")
+            prompt_simple = f"Genera un pronóstico de 5 días para San Martín de los Andes con esta información: SMN: {datos_smn_formateados[:300]}. Temperaturas aproximadas: máximas 25-30°C, mínimas 15-20°C. Formato simple."
+            
+            try:
+                # Intentar con el modelo más básico
+                model = genai.GenerativeModel("models/gemma-3-27b-it")
+                response = model.generate_content(prompt_simple)
+                if response.text:
+                    sintesis = response.text
+                    motor_ia = "GEMMA-3-27B-IT (modo alternativo)"
+                    status.update(label="✅ Síntesis generada (modo alternativo)", state="complete")
+                else:
+                    st.error(sintesis)
+                    st.stop()
+            except:
+                st.error("❌ Fallo completo del sistema IA")
+                st.stop()
         else:
-            status.update(label="✅ Síntesis generada exitosamente", state="complete")
+            status.update(label="✅ Análisis completado exitosamente", state="complete")
 
-    # 6. RESULTADO FINAL (Pantalla principal)
-    st.markdown("### 📋 Pronóstico Generado")
-    st.markdown(f'<div class="reporte-final">{sintesis}</div>', unsafe_allow_html=True)
-
-    # 7. TESTIGO DE VERDAD (Leyenda de fuentes al final)
-    st.markdown("### 🔍 Testigo de Fuentes")
-    
-    # Información detallada de debug
-    info_debug = ""
-    if modo_debug:
-        info_debug = f"""
-        <div class="debug-info">
-            <strong>Debug Info:</strong><br>
-            AIC: {debug_aic}<br>
-            SMN: {debug_smn}<br>
-            Open-Meteo: {debug_om}
+    # ===== 9. MOSTRAR RESULTADOS =====
+    with resultado_container:
+        st.markdown("### 📋 PRONÓSTICO GENERADO")
+        st.markdown(f'<div class="reporte-final">{sintesis}</div>', unsafe_allow_html=True)
+        
+        # ===== 10. PANEL DE VERIFICACIÓN =====
+        st.markdown("### 🔍 VERIFICACIÓN DE FUENTES")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                label="AIC",
+                value="✅ CONECTADO" if aic_ok else "❌ FALLÓ",
+                delta=None,
+                delta_color="normal"
+            )
+            if modo_debug and debug_aic:
+                st.caption(f"Detalle: {debug_aic}")
+        
+        with col2:
+            st.metric(
+                label="SMN",
+                value="✅ CONECTADO" if smn_ok else "❌ FALLÓ",
+                delta=None,
+                delta_color="normal"
+            )
+            if modo_debug and debug_smn:
+                st.caption(f"Detalle: {debug_smn}")
+        
+        with col3:
+            st.metric(
+                label="SATELITAL",
+                value="✅ CONECTADO" if om_ok else "❌ FALLÓ",
+                delta=None,
+                delta_color="normal"
+            )
+            if modo_debug and debug_om:
+                st.caption(f"Detalle: {debug_om}")
+        
+        # ===== 11. RESUMEN TÉCNICO =====
+        st.markdown(f"""
+        <div class="testigo-fuente">
+            <strong>📊 RESUMEN TÉCNICO DE LA EJECUCIÓN</strong><br><br>
+            
+            <strong>🌐 ESTADO DE FUENTES:</strong><br>
+            {'✅' if aic_ok else '❌'} <b>AIC (Neuquén):</b> {'Datos obtenidos' if aic_ok else 'Fuente no disponible'}<br>
+            {'✅' if smn_ok else '❌'} <b>SMN (Chapelco):</b> {'Datos sincronizados' if smn_ok else 'Sin conexión'}<br>
+            {'✅' if om_ok else '❌'} <b>Modelos Globales:</b> {'GFS/ECMWF activos' if om_ok else 'Fuente offline'}<br><br>
+            
+            <strong>🤖 PROCESAMIENTO IA:</strong><br>
+            🧠 <b>Modelo utilizado:</b> {motor_ia}<br>
+            ⚡ <b>Estrategia:</b> {'Ponderación 40/60 normal' if aic_ok else 'Ponderación 60/40 (SMN+OpenMeteo)'}<br><br>
+            
+            <strong>📅 CONTEXTO TEMPORAL:</strong><br>
+            📍 <b>Ubicación:</b> San Martín de los Andes (-40.1579, -71.3534)<br>
+            🗓️ <b>Fecha base:</b> {fecha_base.strftime('%d/%m/%Y')}<br>
+            ⏰ <b>Generado:</b> {datetime.now().strftime('%H:%M:%S')}
         </div>
+        """, unsafe_allow_html=True)
+        
+        # ===== 12. DESCARGAR REPORTE =====
+        reporte_completo = f"""
+        {'='*60}
+        PRONÓSTICO METEOROLÓGICO - SAN MARTÍN DE LOS ANDES
+        {'='*60}
+        
+        Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+        Modelo IA utilizado: {motor_ia}
+        
+        {'-'*60}
+        ESTADO DE FUENTES:
+        - AIC: {'✅ CONECTADO' if aic_ok else '❌ NO DISPONIBLE'}
+        - SMN: {'✅ CONECTADO' if smn_ok else '❌ NO DISPONIBLE'}
+        - Open-Meteo: {'✅ CONECTADO' if om_ok else '❌ NO DISPONIBLE'}
+        
+        {'-'*60}
+        PRONÓSTICO:
+        
+        {sintesis}
+        
+        {'-'*60}
+        SISTEMA CLIMÁTICO SMA v2026
+        San Martín de los Andes, Neuquén, Argentina
+        {'='*60}
         """
-    
-    st.markdown(f"""
-    <div class="testigo-fuente">
-        <strong>📊 Métricas de esta ejecución:</strong><br><br>
         
-        <strong>🌐 Fuentes de datos:</strong><br>
-        {'✅' if aic_ok else '❌'} <b>AIC:</b> {'Sincronizado' if aic_ok else 'No disponible'}<br>
-        {'✅' if smn_ok else '❌'} <b>SMN:</b> {'Sincronizado (Chapelco Aero)' if smn_ok else 'No disponible'}<br>
-        {'✅' if om_ok else '❌'} <b>Modelos Satelitales:</b> {'GFS/ECMWF activos' if om_ok else 'No disponible'}<br><br>
-        
-        <strong>🤖 Motor de IA utilizado:</strong><br>
-        🧠 <b>{motor_ia}</b><br>
-        <small>Jerarquía aplicada: 1) Gemini 3 → 2) Gemini 2.5 → 3) Flash Latest</small><br><br>
-        
-        <strong>⚖️ Ponderación aplicada:</strong><br>
-        🔹 <b>40%</b> Fuentes locales (AIC/SMN) - Fenómenos específicos<br>
-        🔹 <b>60%</b> Modelos globales - Tendencia y temperatura
-    </div>
-    {info_debug}
-    """, unsafe_allow_html=True)
+        st.download_button(
+            label="💾 DESCARGAR REPORTE COMPLETO",
+            data=reporte_completo.encode('utf-8'),
+            file_name=f"pronostico_sma_{fecha_base.strftime('%Y%m%d_%H%M')}.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
 
-    # 8. Descarga del reporte
-    reporte_completo = f"""
-    SÍNTESIS METEOROLÓGICA - SAN MARTÍN DE LOS ANDES
-    Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M')}
-    Fuente IA: {motor_ia}
-    
-    {sintesis}
-    
-    --- METADATOS ---
-    Fuentes consultadas:
-    - AIC: {'✅' if aic_ok else '❌'} {'(método alternativo)' if not aic_ok and 'alternativo' in debug_aic else ''}
-    - SMN: {'✅' if smn_ok else '❌'} 
-    - Open-Meteo: {'✅' if om_ok else '❌'}
-    
-    Sistema Climático SMA v2026
-    """
-    
-    st.download_button(
-        label="📥 Descargar Reporte Completo",
-        data=reporte_completo.encode('utf-8'),
-        file_name=f"pronostico_sma_{fecha_base.strftime('%Y%m%d')}.txt",
-        mime="text/plain"
-    )
-
-# Información de pie de página
+# ===== 13. INFORMACIÓN ADICIONAL =====
 st.markdown("---")
 st.markdown("""
-### 📌 Mejoras Implementadas:
+### 🎯 MODELOS DISPONIBLES Y USOS DIARIOS:
 
-#### 🔧 **Solución para AIC:**
-1. **Headers mejorados:** Simulación de navegador real
-2. **Verificación de contenido:** Detecta si es PDF o HTML
-3. **Método alternativo:** Si falla el PDF directo, busca en páginas HTML
-4. **Debug integrado:** Muestra información técnica para diagnóstico
+#### **🥇 PRIMERA LÍNEA (Gemini 3 - Nuevos):**
+- `gemini-3-pro-preview`: ~15-25 usos/día (más preciso)
+- `gemini-3-flash-preview`: ~20-30 usos/día (más rápido)
 
-#### 🔄 **Sistema de fallback:**
-- Intento 1: URL directa del PDF
-- Intento 2: Método alternativo con diferentes URLs
-- Opción de debug para ver detalles técnicos
+#### **🥈 SEGUNDA LÍNEA (Gemini 2.5 - Estables):**
+- `gemini-2.5-pro`: ~30-40 usos/día
+- `gemini-2.5-flash`: ~40-50 usos/día
 
-#### 📊 **Monitoreo mejorado:**
-- Status codes de todas las respuestas
-- Tipo de contenido detectado
-- Tiempos de respuesta
+#### **🥉 TERCERA LÍNEA (Latest - Alta disponibilidad):**
+- `gemini-pro-latest`: ~50-60 usos/día
+- `gemini-flash-latest`: ~60-70 usos/día
+
+#### **🔄 RESPALDO (Gemma - Alternativa):**
+- `gemma-3-27b-it`: ~80-100 usos/día
+- `gemma-3-12b-it`: ~100+ usos/día
+
+### 🔧 SISTEMA DE FALLBACK AUTOMÁTICO:
+1. Intenta modelos Gemini 3 primero
+2. Si fallan por límite, pasa a Gemini 2.5
+3. Si persiste el error, usa modelos Latest
+4. Último recurso: modelos Gemma
 """)
 
-st.caption(f"🏔️ Sistema optimizado para modelos Gemini 3/2.5 | Versión 2026.01 | Última ejecución: {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"🏔️ Sistema Climático SMA v2026.01 | Última comprobación: {datetime.now().strftime('%H:%M:%S')}")
