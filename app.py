@@ -13,11 +13,11 @@ st.title("📡 Extracción Meteorológica SMA")
 st.markdown("---")
 
 # ============================================================================
-# AIC - PARSEO CORRECTO DE COLUMNAS
+# AIC - VERSIÓN LIMPIA
 # ============================================================================
 
-def obtener_aic_columnas():
-    """Parsea el PDF de AIC como columnas, no como filas"""
+def obtener_aic():
+    """Versión limpia de AIC - solo tabla final"""
     
     try:
         url = "https://www.aic.gob.ar/sitio/extendido-pdf?a=1029&z=1750130550"
@@ -30,24 +30,11 @@ def obtener_aic_columnas():
         with pdfplumber.open(io.BytesIO(response.content)) as pdf:
             texto = pdf.pages[0].extract_text()
         
-        # SEPARAR LÍNEAS
         lineas = [line.strip() for line in texto.split('\n') if line.strip()]
         
-        # DEBUG: Mostrar todas las líneas
-        st.write("**🔍 TODAS LAS LÍNEAS DEL PDF:**")
-        for i, linea in enumerate(lineas):
-            st.write(f"{i}: {linea}")
-        
-        # ============================================================
-        # 1. FECHAS (Línea 1 - TODAS las fechas en una línea)
-        # ============================================================
-        if len(lineas) < 1:
-            return [], False, "❌ PDF vacío o sin formato esperado"
-        
-        linea_fechas = lineas[1]  # Línea 1 tiene: "04-01-2026 04-01-2026 05-01-2026..."
+        # 1. FECHAS (línea 1)
+        linea_fechas = lineas[1]
         todas_fechas = linea_fechas.split()
-        
-        # Solo tomar fechas únicas (cada fecha aparece 2 veces: día y noche)
         fechas_unicas = []
         for i in range(0, len(todas_fechas), 2):
             if i < len(todas_fechas):
@@ -55,254 +42,125 @@ def obtener_aic_columnas():
                 if fecha not in fechas_unicas:
                     fechas_unicas.append(fecha)
         
-        st.write(f"**📅 Fechas únicas encontradas:** {fechas_unicas}")
+        # 2. PERÍODOS (línea 2)
+        periodos = lineas[2].split()
         
-        # ============================================================
-        # 2. PERÍODOS (Línea 2 - Día/Noche alternados)
-        # ============================================================
-        if len(lineas) < 2:
-            return [], False, "❌ Falta línea de períodos"
-        
-        linea_periodos = lineas[2]  # "Día Noche Día Noche Día Noche..."
-        periodos = linea_periodos.split()
-        st.write(f"**📊 Períodos:** {periodos}")
-        
-        # ============================================================
-        # 3. CONDICIONES DEL CIELO (Líneas 3-6, combinarlas)
-        # ============================================================
-        # Las condiciones están repartidas en 4 líneas
-        # Línea 3: "Cielo Mayormente"
-        # Línea 4: "Despejado"
-        # Línea 5: "Lluvias Débiles"
-        # Línea 6: "y Dispersas"
-        condiciones_combinadas = []
-        
-        # Tomar líneas 3 a 6 y combinar por columnas
-        lineas_cielo = []
-        for i in range(3, min(7, len(lineas))):
-            lineas_cielo.append(lineas[i])
-        
-        st.write(f"**☁️ Líneas del cielo:** {lineas_cielo}")
-        
-        # Combinar las 4 líneas en una lista de condiciones
-        # Cada línea tiene palabras separadas por espacios
+        # 3. CONDICIONES (líneas 3-6)
+        lineas_cielo = lineas[3:7]
         palabras_por_linea = [linea.split() for linea in lineas_cielo]
         
-        # Determinar cuántas columnas hay (debe ser igual a len(periodos))
-        num_columnas = len(periodos)
-        
-        # Reconstruir cada condición combinando palabras de cada línea
+        # Reconstruir condiciones
         condiciones = []
-        for col in range(num_columnas):
+        for col in range(len(periodos)):
             condicion = ""
             for linea_idx in range(len(palabras_por_linea)):
                 if col < len(palabras_por_linea[linea_idx]):
                     condicion += palabras_por_linea[linea_idx][col] + " "
             condiciones.append(condicion.strip())
         
-        st.write(f"**☁️ Condiciones reconstruidas ({len(condiciones)}):**")
-        for i, cond in enumerate(condiciones):
-            st.write(f"  Col {i} ({periodos[i]}): {cond}")
+        # 4. TEMPERATURAS (línea 7)
+        temperaturas = re.findall(r'(-?\d+)\s*[ºC°C]', lineas[7])
         
-        # ============================================================
-        # 4. TEMPERATURAS (Línea 7)
-        # ============================================================
-        if len(lineas) < 7:
-            return [], False, "❌ Falta línea de temperaturas"
+        # 5. VIENTOS (línea 8)
+        vientos = re.findall(r'(\d+)\s*km/h', lineas[8])
         
-        linea_temperaturas = lineas[7]  # "Temperatura 27 ºC 13 ºC 27 ºC..."
-        # Extraer solo los números (temperaturas)
-        temperaturas = re.findall(r'(-?\d+)\s*[ºC°C]', linea_temperaturas)
-        st.write(f"**🌡️ Temperaturas:** {temperaturas}")
+        # 6. RÁFAGAS (línea 9)
+        rafagas = re.findall(r'(\d+)\s*km/h', lineas[9])
         
-        # ============================================================
-        # 5. VIENTOS (Línea 8)
-        # ============================================================
-        if len(lineas) < 8:
-            return [], False, "❌ Falta línea de vientos"
-        
-        linea_vientos = lineas[8]  # "Viento 26 km/h 20 km/h 13 km/h..."
-        vientos = re.findall(r'(\d+)\s*km/h', linea_vientos)
-        st.write(f"**💨 Vientos:** {vientos}")
-        
-        # ============================================================
-        # 6. RÁFAGAS (Línea 9)
-        # ============================================================
-        if len(lineas) < 9:
-            return [], False, "❌ Falta línea de ráfagas"
-        
-        linea_rafagas = lineas[9]  # "Ráfagas 30 km/h 20 km/h 19 km/h..."
-        rafagas = re.findall(r'(\d+)\s*km/h', linea_rafagas)
-        st.write(f"**🌪️ Ráfagas:** {rafagas}")
-        
-        # ============================================================
-        # 7. DIRECCIÓN (Línea 10)
-        # ============================================================
-        if len(lineas) < 10:
-            return [], False, "❌ Falta línea de dirección"
-        
-        linea_direccion = lineas[10]  # "Dirección NE SE O O O O E SE SO SO O O"
-        # Separar por espacios y quitar "Dirección"
-        partes = linea_direccion.split()
+        # 7. DIRECCIÓN (línea 10)
+        partes = lineas[10].split()
         direcciones = partes[1:] if partes[0] == "Dirección" else partes
-        st.write(f"**🧭 Direcciones:** {direcciones}")
         
-        # ============================================================
-        # 8. PRESIÓN (Línea 11)
-        # ============================================================
-        if len(lineas) < 11:
-            return [], False, "❌ Falta línea de presión"
+        # 8. PRESIÓN (línea 11)
+        presiones = re.findall(r'(\d+)\s*hPa', lineas[11])
         
-        linea_presion = lineas[11]  # "Presión 1011 hPa 1013 hPa 1004 hPa..."
-        presiones = re.findall(r'(\d+)\s*hPa', linea_presion)
-        st.write(f"**📊 Presiones:** {presiones}")
-        
-        # ============================================================
-        # CONSTRUIR TABLA FINAL
-        # ============================================================
+        # CONSTRUIR TABLA
         tabla = []
-        
-        # Verificar que tenemos datos para todas las columnas
-        num_datos_esperados = len(periodos)
-        
-        # Asegurar que todas las listas tengan la misma longitud
-        listas_datos = {
-            'condiciones': condiciones,
-            'temperaturas': temperaturas,
-            'vientos': vientos,
-            'rafagas': rafagas,
-            'direcciones': direcciones,
-            'presiones': presiones
-        }
-        
-        # Recortar todas las listas al mismo tamaño
-        tamaño_minimo = min(
-            len(condiciones),
-            len(temperaturas),
-            len(vientos),
-            len(rafagas),
-            len(direcciones),
-            len(presiones),
-            len(periodos)
-        )
-        
-        st.write(f"**📏 Tamaño mínimo de datos:** {tamaño_minimo}")
-        
-        # Asignar fecha a cada columna
         fecha_idx = 0
-        for col_idx in range(tamaño_minimo):
-            # Determinar qué fecha corresponde a esta columna
-            if col_idx % 2 == 0:  # Columnas pares son Día
+        
+        for col_idx in range(min(len(periodos), len(temperaturas), len(vientos), len(rafagas), len(direcciones), len(presiones))):
+            # Determinar fecha
+            if col_idx % 2 == 0:
                 fecha = fechas_unicas[fecha_idx]
-            else:  # Columnas impares son Noche (misma fecha)
+            else:
                 fecha = fechas_unicas[fecha_idx]
                 fecha_idx += 1
             
-            # Obtener datos para esta columna
-            momento = periodos[col_idx] if col_idx < len(periodos) else f"Col{col_idx}"
+            # Limpiar "Cielo " del inicio si existe
             cielo = condiciones[col_idx] if col_idx < len(condiciones) else "N/D"
-            temp = temperaturas[col_idx] if col_idx < len(temperaturas) else "N/D"
-            viento = vientos[col_idx] if col_idx < len(vientos) else "N/D"
-            rafaga = rafagas[col_idx] if col_idx < len(rafagas) else "N/D"
-            direccion = direcciones[col_idx] if col_idx < len(direcciones) else "N/D"
-            presion = presiones[col_idx] if col_idx < len(presiones) else "N/D"
-            
-            # Limpiar texto del cielo
-            cielo_limpio = cielo.replace("Cielo ", "").strip()
+            if cielo.startswith("Cielo "):
+                cielo = cielo[6:]
             
             tabla.append({
                 'Fecha': fecha,
-                'Momento': momento,
-                'Cielo': cielo_limpio,
-                'Temperatura': f"{temp} ºC",
-                'Viento': f"{viento} km/h",
-                'Ráfagas': f"{rafaga} km/h",
-                'Dirección': direccion,
-                'Presión': f"{presion} hPa"
+                'Momento': periodos[col_idx],
+                'Cielo': cielo,
+                'Temperatura': f"{temperaturas[col_idx]} ºC" if col_idx < len(temperaturas) else "N/D",
+                'Viento': f"{vientos[col_idx]} km/h" if col_idx < len(vientos) else "N/D",
+                'Ráfagas': f"{rafagas[col_idx]} km/h" if col_idx < len(rafagas) else "N/D",
+                'Presión': f"{presiones[col_idx]} hPa" if col_idx < len(presiones) else "N/D"
             })
         
-        return tabla, True, f"✅ AIC: {len(tabla)} filas ({len(fechas_unicas)} días)"
+        return tabla, True, f"✅ AIC: {len(tabla)} registros ({len(fechas_unicas)} días)"
         
     except Exception as e:
-        st.error(f"❌ Error en AIC: {str(e)}")
-        return [], False, f"❌ Error: {str(e)}"
+        return [], False, f"❌ Error AIC: {str(e)}"
 
 # ============================================================================
-# SMN - CON FECHA DINÁMICA
+# SMN - VERSIÓN SIMPLE
 # ============================================================================
 
-def obtener_smn_fecha_dinamica():
-    """Descarga el ZIP dinámico del SMN"""
+def obtener_smn():
+    """Versión simple de SMN - encuentra el TXT dinámico"""
     
     try:
-        # Generar URL con fecha actual
-        fecha_actual = datetime.now()
-        dia = fecha_actual.strftime("%d")
-        mes = fecha_actual.strftime("%m")
-        año = fecha_actual.strftime("%Y")
-        
-        # La URL ya incluye la fecha en el parámetro, pero el ZIP se genera dinámicamente
         url = "https://ssl.smn.gob.ar/dpd/zipopendata.php?dato=pron5d"
-        
-        st.write(f"**📅 Fecha actual:** {dia}/{mes}/{año}")
-        st.write(f"**🔗 URL SMN:** {url}")
-        
         response = requests.get(url, timeout=30, verify=False)
         
         if response.status_code != 200:
             return None, False, f"❌ Error HTTP {response.status_code}"
         
-        # Verificar contenido
-        if len(response.content) < 100:
-            return None, False, "❌ Archivo ZIP demasiado pequeño"
-        
-        # Intentar abrir como ZIP
-        try:
-            with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
-                archivos = zip_file.namelist()
-                st.write(f"**📦 Archivos en el ZIP:** {archivos}")
+        # Abrir ZIP
+        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
+            # Listar todos los archivos
+            archivos = zip_file.namelist()
+            
+            # Buscar archivo que empiece con "pronostico" y termine en ".txt"
+            archivos_txt = [f for f in archivos if f.lower().endswith('.txt') and 'pronostico' in f.lower()]
+            
+            if not archivos_txt:
+                return None, False, f"❌ No hay archivos TXT en el ZIP. Archivos: {archivos}"
+            
+            # Usar el primer archivo TXT que encontremos
+            archivo_txt = archivos_txt[0]
+            
+            # Leer contenido
+            with zip_file.open(archivo_txt) as f:
+                contenido = f.read().decode('utf-8', errors='ignore')
+            
+            # Buscar CHAPELCO
+            if 'CHAPELCO' in contenido.upper():
+                # Extraer desde CHAPELCO hasta el próximo código o fin
+                idx = contenido.upper().find('CHAPELCO')
+                seccion = contenido[idx:]
                 
-                # Buscar archivo .txt
-                txt_files = [f for f in archivos if f.endswith('.txt')]
-                if not txt_files:
-                    return None, False, "❌ No hay archivos .txt en el ZIP"
+                # Tomar hasta el próximo código de estación (4 letras mayúsculas)
+                lineas = seccion.split('\n')
+                resultado = []
+                for linea in lineas:
+                    resultado.append(linea.rstrip())
+                    # Si encontramos otro código de estación, parar
+                    if len(resultado) > 10 and re.match(r'^[A-Z]{4,}_[A-Z]{4,}$', linea.strip()):
+                        break
+                    if len(resultado) > 50:  # Límite de líneas
+                        break
                 
-                # Leer el primer archivo .txt
-                with zip_file.open(txt_files[0]) as f:
-                    contenido_completo = f.read().decode('utf-8', errors='ignore')
-                
-                # Mostrar parte del contenido
-                st.write("**🔍 Primeros 2000 caracteres del archivo TXT:**")
-                st.code(contenido_completo[:2000])
-                
-                # Buscar CHAPELCO_AERO
-                if 'CHAPELCO_AERO' in contenido_completo:
-                    # Extraer sección completa
-                    idx = contenido_completo.find('CHAPELCO_AERO')
-                    seccion = contenido_completo[idx:]
-                    
-                    # Buscar hasta el próximo separador o estación
-                    lineas = seccion.split('\n')
-                    resultado = []
-                    for linea in lineas[:50]:  # Tomar primeras 50 líneas
-                        resultado.append(linea.rstrip())
-                        if '======' in linea and len(resultado) > 10:
-                            break
-                    
-                    return '\n'.join(resultado), True, "✅ SMN: Sección CHAPELCO_AERO encontrada"
-                else:
-                    # Buscar cualquier mención a Chapelco
-                    contenido_upper = contenido_completo.upper()
-                    if 'CHAPELCO' in contenido_upper:
-                        idx = contenido_upper.find('CHAPELCO')
-                        seccion = contenido_completo[idx:idx+1000]
-                        return seccion, True, "✅ SMN: 'CHAPELCO' encontrado"
-                    else:
-                        return None, False, "❌ No se encontró CHAPELCO_AERO en el archivo"
-        
-        except zipfile.BadZipFile:
-            return None, False, "❌ El archivo descargado no es un ZIP válido"
-        
+                return '\n'.join(resultado), True, f"✅ SMN: Encontrado en {archivo_txt}"
+            else:
+                return None, False, "❌ No se encontró CHAPELCO en el archivo"
+    
+    except zipfile.BadZipFile:
+        return None, False, "❌ No es un archivo ZIP válido"
     except Exception as e:
         return None, False, f"❌ Error SMN: {str(e)}"
 
@@ -316,25 +174,26 @@ def obtener_openmeteo():
         response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
-            return response.json(), True, "✅ Open-Meteo: OK"
+            datos = response.json()
+            return datos, True, f"✅ Open-Meteo: {len(datos.get('daily', {}).get('time', []))} días"
         else:
-            return {}, False, f"❌ Error: {response.status_code}"
-    except:
-        return {}, False, "❌ Error de conexión"
+            return {}, False, f"❌ Error {response.status_code}"
+    except Exception as e:
+        return {}, False, f"❌ Error: {str(e)}"
 
 # ============================================================================
-# INTERFAZ
+# INTERFAZ SIMPLE
 # ============================================================================
 
 def main():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📊 AIC (Columnas)", type="primary", use_container_width=True):
+        if st.button("📊 AIC", type="primary", use_container_width=True):
             st.session_state.fuente = "AIC"
     
     with col2:
-        if st.button("⏰ SMN (ZIP dinámico)", type="primary", use_container_width=True):
+        if st.button("⏰ SMN", type="primary", use_container_width=True):
             st.session_state.fuente = "SMN"
     
     with col3:
@@ -347,66 +206,78 @@ def main():
         fuente = st.session_state.fuente
         
         if fuente == "AIC":
-            with st.spinner("Parseando AIC (formato columnas)..."):
-                datos, ok, msg = obtener_aic_columnas()
+            datos, ok, msg = obtener_aic()
+            
+            if ok:
+                st.success(msg)
                 
-                if ok and datos:
-                    st.success(msg)
-                    
-                    # Mostrar como tabla bonita
-                    st.write("### 📋 TABLA AIC - FORMATO CORRECTO")
-                    
-                    # Crear DataFrame
-                    df = pd.DataFrame(datos)
-                    
-                    # Mostrar con estilo
-                    st.dataframe(
-                        df,
-                        column_config={
-                            "Fecha": st.column_config.TextColumn("Fecha", width="small"),
-                            "Momento": st.column_config.TextColumn("Momento", width="small"),
-                            "Cielo": st.column_config.TextColumn("Cielo", width="large"),
-                            "Temperatura": st.column_config.TextColumn("Temp", width="small"),
-                            "Viento": st.column_config.TextColumn("Viento", width="small"),
-                            "Ráfagas": st.column_config.TextColumn("Ráfagas", width="small"),
-                            "Dirección": st.column_config.TextColumn("Dir", width="small"),
-                            "Presión": st.column_config.TextColumn("Presión", width="small")
-                        },
-                        hide_index=True,
-                        use_container_width=True
-                    )
-                    
-                    # También mostrar en formato texto plano
-                    st.write("### 📝 FORMATO TEXTO PLANO (para copiar):")
-                    for fila in datos:
-                        st.text(f"{fila['Fecha']}\t{fila['Momento']}\t{fila['Cielo']}\t{fila['Temperatura']}\t{fila['Viento']}\t{fila['Ráfagas']}\t{fila['Dirección']}\t{fila['Presión']}")
-                else:
-                    st.error(msg)
+                # Mostrar tabla
+                df = pd.DataFrame(datos)
+                st.dataframe(df, hide_index=True, use_container_width=True)
+                
+                # Botón para descargar
+                csv = df.to_csv(index=False, sep='\t')
+                st.download_button(
+                    "📥 Descargar tabla AIC (TSV)",
+                    csv,
+                    "aic_datos.tsv",
+                    "text/tab-separated-values"
+                )
+            else:
+                st.error(msg)
         
         elif fuente == "SMN":
-            with st.spinner("Descargando ZIP dinámico del SMN..."):
-                datos, ok, msg = obtener_smn_fecha_dinamica()
+            datos, ok, msg = obtener_smn()
+            
+            if ok and datos:
+                st.success(msg)
                 
-                if ok and datos:
-                    st.success(msg)
-                    st.write("### ⏰ SECCIÓN SMN - CHAPELCO_AERO")
-                    st.code(datos)
-                else:
-                    st.error(msg)
+                # Mostrar contenido
+                st.text_area("Contenido del archivo SMN:", datos, height=400)
+                
+                # Botón para descargar
+                st.download_button(
+                    "📥 Descargar texto SMN",
+                    datos,
+                    "smn_chapelco.txt",
+                    "text/plain"
+                )
+            else:
+                st.error(msg)
         
         elif fuente == "OPENMETEO":
-            with st.spinner("Obteniendo datos de Open-Meteo..."):
-                datos, ok, msg = obtener_openmeteo()
+            datos, ok, msg = obtener_openmeteo()
+            
+            if ok:
+                st.success(msg)
                 
-                if ok:
-                    st.success(msg)
-                    st.write("### 🛰️ DATOS OPEN-METEO")
-                    st.json(datos)
-                else:
-                    st.error(msg)
+                # Mostrar datos diarios
+                if 'daily' in datos and 'time' in datos['daily']:
+                    st.write("**Pronóstico diario:**")
+                    daily_data = []
+                    for i in range(min(3, len(datos['daily']['time']))):
+                        daily_data.append({
+                            'Fecha': datos['daily']['time'][i],
+                            'Máx': f"{datos['daily']['temperature_2m_max'][i]:.1f}°C",
+                            'Mín': f"{datos['daily']['temperature_2m_min'][i]:.1f}°C"
+                        })
+                    
+                    st.table(daily_data)
+                
+                # Botón para descargar JSON
+                import json
+                json_data = json.dumps(datos, indent=2)
+                st.download_button(
+                    "📥 Descargar JSON Open-Meteo",
+                    json_data,
+                    "openmeteo_datos.json",
+                    "application/json"
+                )
+            else:
+                st.error(msg)
 
 if __name__ == "__main__":
     main()
 
 st.markdown("---")
-st.caption("Sistema de Extracción V3.0 | AIC: Parseo por columnas | SMN: ZIP dinámico | Open-Meteo: Funcional")
+st.caption("Sistema de Extracción V4.0 | Simple y funcional")
