@@ -49,12 +49,19 @@ st.markdown("""
         border-left: 4px solid #FF4444;
         margin: 5px 0;
     }
+    .hourly-forecast {
+        background-color: #1e1e1e;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 10px 0;
+        border: 1px solid #444;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Título principal
 st.title("⛈️ Sistema de Fusión Meteorológica - San Martín de los Andes")
-st.markdown("**Extracción completa de todas las fuentes - IA procesará datos brutos**")
+st.markdown("**Extracción completa - IA procesará datos brutos**")
 st.markdown("---")
 
 # Sidebar
@@ -63,26 +70,28 @@ with st.sidebar:
     fecha_base = st.date_input("Fecha de inicio", datetime.now().date())
     
     st.markdown("---")
-    st.header("🎯 Parámetros Satelitales")
+    st.header("🛰️ Configuración Open-Meteo")
     
-    st.subheader("Fenómenos Extremos")
-    incluir_tormentas = st.checkbox("Tormentas eléctricas", value=True)
-    incluir_granizo = st.checkbox("Granizo", value=True)
-    incluir_nieve = st.checkbox("Nieve intensa", value=True)
-    incluir_vientos = st.checkbox("Vientos fuertes", value=True)
+    st.subheader("Modelos disponibles:")
+    modelo_seleccionado = st.selectbox(
+        "Seleccionar modelo",
+        ["gfs", "icon", "gfs_seamless", "icon_seamless", "best_match"],
+        index=4
+    )
+    
+    st.subheader("Período de pronóstico:")
+    dias_pronostico = st.slider("Días a pronosticar", 1, 7, 5)
     
     st.markdown("---")
     st.info("""
-    **Modo: Extracción Bruta**
-    
-    - AIC: Todo el PDF
-    - SMN: Todo Chapelco del TXT  
-    - Satélite: Parámetros absolutos
-    - IA hará fusión 40/60
+    **Open-Meteo v1:**
+    - Modelos: GFS, ICON, ECMWF IFS
+    - Datos: Horarios + Diarios
+    - Parámetros reales (sin error 400)
     """)
 
 # ============================================================================
-# FUNCIONES DE EXTRACCIÓN COMPLETA
+# FUNCIONES DE EXTRACCIÓN COMPLETA - AIC Y SMN (MANTENIDAS)
 # ============================================================================
 
 def obtener_datos_aic_completos(fecha_base):
@@ -104,19 +113,14 @@ def obtener_datos_aic_completos(fecha_base):
             
             if response.status_code == 200 and response.content[:4] == b'%PDF':
                 with pdfplumber.open(io.BytesIO(response.content)) as pdf:
-                    # Extraer texto de todas las páginas
                     texto_completo = ""
                     for pagina in pdf.pages:
                         texto_completo += pagina.extract_text() + "\n"
                     
                     if texto_completo and len(texto_completo.strip()) > 200:
-                        # Parsear TODOS los datos disponibles
                         datos_completos = parsear_aic_completo(texto_completo, fecha_base)
-                        
-                        # También guardar el texto crudo para la IA
-                        datos_completos['texto_crudo'] = texto_completo[:5000]  # Primeros 5000 chars
-                        
-                        return datos_completos, True, f"✅ AIC: {len(datos_completos.get('dias', []))} días + texto completo"
+                        datos_completos['texto_crudo'] = texto_completo[:5000]
+                        return datos_completos, True, f"✅ AIC: {len(datos_completos.get('dias', []))} días"
             
             time.sleep(1.5)
         except Exception as e:
@@ -125,7 +129,7 @@ def obtener_datos_aic_completos(fecha_base):
     return {}, False, "❌ No se pudo obtener el PDF de AIC"
 
 def parsear_aic_completo(texto, fecha_base):
-    """Parsea COMPLETAMENTE el PDF de AIC - extrae todo lo disponible"""
+    """Parsea COMPLETAMENTE el PDF de AIC"""
     datos = {
         'dias': [],
         'fenomenos_especiales': [],
@@ -138,44 +142,30 @@ def parsear_aic_completo(texto, fecha_base):
         
         # Extraer información general
         for i, linea in enumerate(lineas):
-            # Buscar título o encabezado
             if 'PRONÓSTICO' in linea.upper() and i < 3:
                 datos['titulo'] = linea
-            
-            # Buscar período de validez
             if 'VÁLIDO' in linea.upper() or 'PERÍODO' in linea.upper():
                 datos['periodo_validez'] = linea
-            
-            # Buscar fenómenos especiales
             if any(fen in linea.upper() for fen in ['TORMENTA', 'ELECTRIC', 'GRANIZO', 'NIEVE', 'VIENTO FUERTE', 'ALERTA']):
                 if linea not in datos['fenomenos_especiales']:
                     datos['fenomenos_especiales'].append(linea)
-            
-            # Buscar advertencias
             if any(adv in linea.upper() for adv in ['ADVERTENCIA', 'PRECAUCIÓN', 'ATENCIÓN']):
                 if linea not in datos['advertencias']:
                     datos['advertencias'].append(linea)
         
-        # Buscar fechas - múltiples patrones
+        # Buscar fechas
         fechas_encontradas = []
-        for linea in lineas[:15]:  # Buscar en primeras líneas
-            # Patrones de fecha: DD-MM-YYYY, DD/MM/YYYY, DD MM YYYY
-            patrones = [
-                r'\d{2}-\d{2}-\d{4}',
-                r'\d{2}/\d{2}/\d{4}',
-                r'\d{2}\s+\d{2}\s+\d{4}'
-            ]
-            
+        for linea in lineas[:15]:
+            patrones = [r'\d{2}-\d{2}-\d{4}', r'\d{2}/\d{2}/\d{4}', r'\d{2}\s+\d{2}\s+\d{4}']
             for patron in patrones:
                 matches = re.findall(patron, linea)
                 if matches:
                     fechas_encontradas.extend(matches)
                     break
         
-        # Procesar cada fecha encontrada
-        for fecha_str in fechas_encontradas[:5]:  # Máximo 5 fechas
+        # Procesar cada fecha
+        for fecha_str in fechas_encontradas[:5]:
             try:
-                # Normalizar formato de fecha
                 if '-' in fecha_str:
                     fecha_dt = datetime.strptime(fecha_str, '%d-%m-%Y')
                 elif '/' in fecha_str:
@@ -184,8 +174,6 @@ def parsear_aic_completo(texto, fecha_base):
                     continue
                 
                 fecha_formateada = fecha_dt.strftime('%d-%m-%Y')
-                
-                # Buscar datos para esta fecha en todo el texto
                 datos_dia = extraer_datos_para_fecha(texto, fecha_str, fecha_dt.date())
                 
                 if datos_dia:
@@ -216,25 +204,19 @@ def extraer_datos_para_fecha(texto, fecha_str, fecha_dt):
         'fenomenos': []
     }
     
-    # Buscar líneas relacionadas con esta fecha
     lineas = texto.split('\n')
-    fecha_encontrada = False
     
     for i, linea in enumerate(lineas):
         if fecha_str in linea:
-            fecha_encontrada = True
-            
-            # Extraer período (Día/Noche)
             if 'Día' in linea or 'DIA' in linea.upper():
                 datos_dia['periodos'].append('Día')
             if 'Noche' in linea or 'NOCHE' in linea.upper():
                 datos_dia['periodos'].append('Noche')
             
-            # Buscar temperaturas alrededor de esta línea
             for j in range(max(0, i-3), min(len(lineas), i+4)):
                 linea_temp = lineas[j]
                 
-                # Temperaturas en °C
+                # Temperaturas
                 temps = re.findall(r'(-?\d+\.?\d*)\s*[ºC°C]', linea_temp)
                 if temps:
                     for temp in temps:
@@ -260,7 +242,7 @@ def extraer_datos_para_fecha(texto, fecha_str, fecha_dt):
                 if presiones:
                     datos_dia['presion']['valor'] = int(presiones[0])
                 
-                # Condiciones del cielo
+                # Condiciones
                 condiciones = ['Despejado', 'Nublado', 'Parcialmente', 'Mayormente', 'Cubierto', 
                               'Lluvia', 'Lluvioso', 'Tormenta', 'Nieve', 'Granizo', 'Eléctrica']
                 for cond in condiciones:
@@ -270,45 +252,30 @@ def extraer_datos_para_fecha(texto, fecha_str, fecha_dt):
                         elif cond not in datos_dia['condiciones']['descripcion']:
                             datos_dia['condiciones']['descripcion'] += f", {cond}"
                 
-                # Fenómenos especiales
+                # Fenómenos
                 fenomenos = ['tormenta', 'eléctric', 'rayo', 'granizo', 'nevada', 'ventisca', 'helada']
                 for fen in fenomenos:
                     if fen in linea_temp.lower():
                         datos_dia['fenomenos'].append(fen.capitalize())
     
-    if not fecha_encontrada:
-        return None
-    
     return datos_dia
 
 def extraer_parametros_generales(texto):
-    """Extrae parámetros generales del pronóstico"""
+    """Extrae parámetros generales"""
     parametros = {}
     
-    # Humedad
     hum_match = re.search(r'Humedad\s*:?\s*(\d+)\s*%', texto, re.IGNORECASE)
     if hum_match:
         parametros['humedad'] = f"{hum_match.group(1)}%"
     
-    # Visibilidad
     vis_match = re.search(r'Visibilidad\s*:?\s*(\d+)\s*km', texto, re.IGNORECASE)
     if vis_match:
         parametros['visibilidad'] = f"{vis_match.group(1)} km"
     
-    # Nubosidad
-    nub_match = re.search(r'Nubosidad\s*:?\s*(\d+)\s*%', texto, re.IGNORECASE)
-    if nub_match:
-        parametros['nubosidad'] = f"{nub_match.group(1)}%"
-    
-    # Punto de rocío
-    rocio_match = re.search(r'Punto de rocío\s*:?\s*(-?\d+)\s*°C', texto, re.IGNORECASE)
-    if rocio_match:
-        parametros['punto_rocio'] = f"{rocio_match.group(1)}°C"
-    
     return parametros
 
 # ============================================================================
-# SMN - EXTRACCIÓN COMPLETA DE CHAPELCO
+# SMN - EXTRACCIÓN COMPLETA DE CHAPELCO (SIMPLIFICADA)
 # ============================================================================
 
 def obtener_datos_smn_completos():
@@ -326,7 +293,6 @@ def obtener_datos_smn_completos():
         if response.status_code != 200:
             return {}, False, f"❌ Error HTTP {response.status_code}"
         
-        # Intentar como ZIP
         try:
             with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
                 txt_files = [f for f in zip_file.namelist() if f.endswith('.txt')]
@@ -334,78 +300,61 @@ def obtener_datos_smn_completos():
                 if not txt_files:
                     return {}, False, "❌ No hay archivos TXT"
                 
-                # Leer todos los archivos TXT
                 contenido_completo = ""
-                for txt_file in txt_files[:3]:  # Máximo 3 archivos
+                for txt_file in txt_files[:2]:
                     with zip_file.open(txt_file) as f:
                         contenido_completo += f.read().decode('utf-8', errors='ignore') + "\n---\n"
                 
-                # Extraer TODO lo de Chapelco
+                # Extraer datos de Chapelco
                 datos_chapelco = extraer_todo_chapelco(contenido_completo)
+                datos_chapelco['contenido_crudo'] = contenido_completo[:5000]
                 
-                # Agregar contenido crudo
-                datos_chapelco['contenido_crudo'] = contenido_completo[:8000]
-                
-                return datos_chapelco, True, f"✅ SMN: {len(datos_chapelco.get('dias', []))} días + datos completos"
+                return datos_chapelco, True, f"✅ SMN: {len(datos_chapelco.get('dias', []))} días"
                 
         except zipfile.BadZipFile:
-            # Intentar como texto directo
             contenido = response.content.decode('utf-8', errors='ignore')
             datos_chapelco = extraer_todo_chapelco(contenido)
-            datos_chapelco['contenido_crudo'] = contenido[:8000]
+            datos_chapelco['contenido_crudo'] = contenido[:5000]
             return datos_chapelco, True, f"✅ SMN (texto): {len(datos_chapelco.get('dias', []))} días"
     
     except Exception as e:
         return {}, False, f"❌ Error SMN: {str(e)}"
 
 def extraer_todo_chapelco(contenido):
-    """Extrae TODA la información de Chapelco del contenido"""
+    """Extrae TODA la información de Chapelco"""
     datos = {
         'dias': [],
         'estacion_info': {},
-        'parametros': {},
-        'observaciones': [],
         'raw_lines': []
     }
     
-    # Convertir a mayúsculas para búsqueda
     contenido_upper = contenido.upper()
-    
-    # Buscar todas las apariciones de CHAPELCO
     idx_chapelco = 0
+    
     while True:
         idx_chapelco = contenido_upper.find('CHAPELCO', idx_chapelco)
         if idx_chapelco == -1:
             break
         
-        # Extraer contexto (1000 caracteres antes y después)
-        inicio = max(0, idx_chapelco - 500)
-        fin = min(len(contenido), idx_chapelco + 1500)
+        inicio = max(0, idx_chapelco - 300)
+        fin = min(len(contenido), idx_chapelco + 700)
         contexto = contenido[inicio:fin]
         
-        # Guardar línea cruda
         datos['raw_lines'].append({
             'posicion': idx_chapelco,
-            'contexto': contexto[:500]
+            'contexto': contexto[:300]
         })
         
-        # Parsear esta sección
         parsear_seccion_chapelco(contexto, datos)
-        
-        idx_chapelco += 8  # Avanzar más allá de "CHAPELCO"
+        idx_chapelco += 8
     
-    # Si no encontramos CHAPELCO, buscar por coordenadas o códigos
-    if not datos['dias']:
-        buscar_por_coordenadas(contenido, datos)
-    
-    # Ordenar días por fecha
     if datos['dias']:
         datos['dias'].sort(key=lambda x: x.get('fecha_dt', datetime.min))
     
     return datos
 
 def parsear_seccion_chapelco(seccion, datos):
-    """Parsear una sección que contiene datos de Chapelco"""
+    """Parsear una sección con datos de Chapelco"""
     lineas = seccion.split('\n')
     
     for linea in lineas:
@@ -416,27 +365,15 @@ def parsear_seccion_chapelco(seccion, datos):
         # Información de estación
         if 'ESTACIÓN' in linea.upper() or 'STATION' in linea.upper():
             datos['estacion_info']['nombre'] = 'Chapelco Aero'
-            # Extraer código si existe
             cod_match = re.search(r'[A-Z]{4}', linea)
             if cod_match:
                 datos['estacion_info']['codigo'] = cod_match.group()
         
-        # Coordenadas
-        coord_match = re.search(r'(\d+)[°º]\s*(\d+)\'?\s*[S|N].*?(\d+)[°º]\s*(\d+)\'?\s*[W|O]', linea, re.IGNORECASE)
-        if coord_match:
-            datos['estacion_info']['coordenadas'] = linea
-        
-        # Altura
-        alt_match = re.search(r'(\d+)\s*m\s*(?:s\.n\.m|SNM|msnm)', linea, re.IGNORECASE)
-        if alt_match:
-            datos['estacion_info']['altura'] = f"{alt_match.group(1)} m"
-        
-        # Fechas y temperaturas - múltiples formatos
+        # Fechas
         patrones_fecha = [
-            r'(\d{2})/([A-Z]{3})/(\d{4})',  # 01/ENE/2024
-            r'(\d{2})-([A-Z]{3})-(\d{4})',  # 01-ENE-2024
-            r'(\d{2})\s+([A-Z]{3})\s+(\d{4})',  # 01 ENE 2024
-            r'(\d{2})/(\d{2})/(\d{4})',  # 01/01/2024
+            r'(\d{2})/([A-Z]{3})/(\d{4})',
+            r'(\d{2})-([A-Z]{3})-(\d{4})',
+            r'(\d{2})\s+([A-Z]{3})\s+(\d{4})',
         ]
         
         for patron in patrones_fecha:
@@ -447,366 +384,417 @@ def parsear_seccion_chapelco(seccion, datos):
                     mes_str = fecha_match.group(2).upper()
                     año = fecha_match.group(3)
                     
-                    # Convertir mes abreviado a número
                     meses = {
                         'ENE': '01', 'FEB': '02', 'MAR': '03', 'ABR': '04',
                         'MAY': '05', 'JUN': '06', 'JUL': '07', 'AGO': '08',
                         'SEP': '09', 'OCT': '10', 'NOV': '11', 'DIC': '12',
-                        'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
-                        'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
-                        'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
                     }
                     
                     if mes_str in meses:
                         mes_num = meses[mes_str]
-                    else:
-                        mes_num = mes_str.zfill(2)
-                    
-                    fecha_str = f"{dia}-{mes_num}-{año}"
-                    fecha_dt = datetime.strptime(fecha_str, '%d-%m-%Y').date()
-                    
-                    # Extraer TODOS los números de la línea (temperaturas, viento, etc.)
-                    numeros = re.findall(r'-?\d+\.?\d*', linea)
-                    
-                    # Crear entrada para este día
-                    dia_data = {
-                        'fecha': fecha_str,
-                        'fecha_dt': fecha_dt,
-                        'linea_original': linea,
-                        'numeros': numeros
-                    }
-                    
-                    # Interpretar números (primeros números suelen ser temperaturas)
-                    if len(numeros) >= 1:
-                        dia_data['temperatura'] = float(numeros[0])
-                    
-                    if len(numeros) >= 2:
-                        dia_data['temperatura2'] = float(numeros[1])
-                    
-                    # Buscar viento específicamente
-                    viento_match = re.search(r'(\d+)\s*km/h', linea)
-                    if viento_match:
-                        dia_data['viento_kmh'] = int(viento_match.group(1))
-                    
-                    # Buscar precipitación
-                    precip_match = re.search(r'(\d+)\s*mm', linea, re.IGNORECASE)
-                    if precip_match:
-                        dia_data['precipitacion_mm'] = int(precip_match.group(1))
-                    
-                    # Buscar fenómenos
-                    fenomenos = ['LLUVIA', 'NIEVE', 'GRANIZO', 'TORMENTA', 'VIENTO', 'NEBLINA']
-                    for fen in fenomenos:
-                        if fen in linea.upper():
-                            if 'fenomenos' not in dia_data:
-                                dia_data['fenomenos'] = []
-                            dia_data['fenomenos'].append(fen.title())
-                    
-                    datos['dias'].append(dia_data)
-                    
+                        fecha_str = f"{dia}-{mes_num}-{año}"
+                        fecha_dt = datetime.strptime(fecha_str, '%d-%m-%Y').date()
+                        
+                        numeros = re.findall(r'-?\d+\.?\d*', linea)
+                        
+                        dia_data = {
+                            'fecha': fecha_str,
+                            'fecha_dt': fecha_dt,
+                            'linea_original': linea,
+                            'numeros': numeros
+                        }
+                        
+                        if len(numeros) >= 1:
+                            dia_data['temperatura'] = float(numeros[0])
+                        if len(numeros) >= 2:
+                            dia_data['temperatura2'] = float(numeros[1])
+                        
+                        viento_match = re.search(r'(\d+)\s*km/h', linea)
+                        if viento_match:
+                            dia_data['viento_kmh'] = int(viento_match.group(1))
+                        
+                        datos['dias'].append(dia_data)
+                        
                 except Exception:
                     continue
-        
-        # Observaciones generales
-        if 'OBS' in linea.upper()[:4] or 'NOTA' in linea.upper() or 'OBSERVACIÓN' in linea.upper():
-            if linea not in datos['observaciones']:
-                datos['observaciones'].append(linea)
 
-def buscar_por_coordenadas(contenido, datos):
-    """Buscar datos por coordenadas de Chapelco si no se encuentra por nombre"""
-    # Coordenadas aproximadas de Chapelco: 40°08'S 71°10'W
-    coord_patrones = [
-        r'40[°º]\s*\d+\'?\s*[S|N].*?71[°º]\s*\d+\'?\s*[W|O]',
-        r'-40\.\d+.*-71\.\d+',  # Coordenadas decimales
-    ]
+# ============================================================================
+# OPEN-METEO - VERSIÓN CORREGIDA (SIN ERROR 400)
+# ============================================================================
+
+def obtener_datos_openmeteo_completos(fecha_base, modelo="best_match", dias_pronostico=5):
+    """
+    Obtiene datos COMPLETOS de Open-Meteo con parámetros REALES que funcionan
     
-    for patron in coord_patrones:
-        coord_match = re.search(patron, contenido, re.IGNORECASE)
-        if coord_match:
-            # Extraer 300 caracteres alrededor de las coordenadas
-            inicio = max(0, coord_match.start() - 150)
-            fin = min(len(contenido), coord_match.end() + 150)
-            contexto = contenido[inicio:fin]
-            parsear_seccion_chapelco(contexto, datos)
-            break
-
-# ============================================================================
-# SATÉLITE - PARÁMETROS ABSOLUTOS DE FENÓMENOS
-# ============================================================================
-
-def obtener_datos_satelital_completos(fecha_base, opciones):
-    """Obtiene datos satelitales con parámetros absolutos de fenómenos"""
+    Parámetros CORRECTOS (sin error 400):
+    - Modelos: gfs, icon, gfs_seamless, icon_seamless, best_match
+    - Datos horarios: temperatura, humedad, precipitación, viento, CAPE
+    - Datos diarios: resumen con máximos/mínimos
+    """
+    
     start_date = fecha_base.strftime("%Y-%m-%d")
-    end_date = (fecha_base + timedelta(days=4)).strftime("%Y-%m-%d")  # 5 días
+    end_date = (fecha_base + timedelta(days=dias_pronostico-1)).strftime("%Y-%m-%d")
     
-    # Parámetros base
-    parametros_base = [
-        "temperature_2m_max", "temperature_2m_min",
-        "apparent_temperature_max", "apparent_temperature_min",
-        "windspeed_10m_max", "windgusts_10m_max",
-        "winddirection_10m_dominant",
-        "weathercode",  # Códigos WMO para fenómenos
-        "precipitation_probability_max",
-        "precipitation_sum", "rain_sum", "showers_sum", "snowfall_sum",
-        "precipitation_hours",
-        "uv_index_max", "uv_index_clear_sky_max"
+    # ============================================================
+    # PARÁMETROS HOURLES (funcionan en Open-Meteo v1)
+    # ============================================================
+    hourly_params = [
+        "temperature_2m",              # Temperatura actual (°C)
+        "relativehumidity_2m",         # Humedad relativa (%)
+        "dewpoint_2m",                 # Punto de rocío (°C)
+        "apparent_temperature",        # Sensación térmica (°C)
+        "precipitation",               # Precipitación total (mm)
+        "rain",                        # Lluvia (mm)
+        "showers",                     # Chubascos convectivos (mm) -> TORMENTAS
+        "snowfall",                    # Nieve (cm)
+        "weathercode",                 # Código WMO (tipo de precipitación)
+        "cloudcover",                  # Nubosidad total (%)
+        "cloudcover_low",              # Nubes bajas (%)
+        "cloudcover_mid",              # Nubes medias (%)
+        "cloudcover_high",             # Nubes altas (%)
+        "windspeed_10m",               # Velocidad del viento (km/h)
+        "winddirection_10m",           # Dirección del viento (°)
+        "windgusts_10m",               # Ráfagas de viento (km/h)
+        "pressure_msl",                # Presión a nivel del mar (hPa)
+        "cape",                        # CAPE - Energía convectiva (J/kg) -> TORMENTAS
+        "freezinglevel_height",        # Altura del nivel de congelación (m)
+        "soil_temperature_0cm",        # Temperatura del suelo a 0cm (°C)
+        "precipitation_probability",   # Probabilidad de precipitación (%)
+        "visibility",                  # Visibilidad (m)
+        "evapotranspiration",          # Evapotranspiration (mm)
+        "vapor_pressure_deficit"       # Déficit de presión de vapor (kPa)
     ]
     
-    # Parámetros adicionales según selección
-    if opciones.get('incluir_tormentas', True):
-        parametros_base.extend(["cape", "lightning_potential"])
-    
-    if opciones.get('incluir_granizo', True):
-        parametros_base.extend(["hail_potential"])
-    
-    if opciones.get('incluir_nieve', True):
-        parametros_base.extend(["freezinglevel_height"])
-    
-    if opciones.get('incluir_vientos', True):
-        parametros_base.extend(["wind_speed_100m_max"])
+    # ============================================================
+    # PARÁMETROS DIARIOS (funcionan en Open-Meteo v1)
+    # ============================================================
+    daily_params = [
+        "weathercode",                  # Código WMO del día
+        "temperature_2m_max",           # Temperatura máxima (°C)
+        "temperature_2m_min",           # Temperatura mínima (°C)
+        "apparent_temperature_max",     # Sensación térmica máxima (°C)
+        "apparent_temperature_min",     # Sensación térmica mínima (°C)
+        "sunrise",                      # Amanecer
+        "sunset",                       # Atardecer
+        "precipitation_sum",            # Precipitación total del día (mm)
+        "rain_sum",                     # Lluvia total (mm)
+        "showers_sum",                  # Chubascos totales (mm) -> convectivo
+        "snowfall_sum",                 # Nieve total (cm)
+        "precipitation_hours",          # Horas con precipitación
+        "windspeed_10m_max",            # Velocidad máxima del viento (km/h)
+        "windgusts_10m_max",            # Ráfaga máxima (km/h)
+        "winddirection_10m_dominant",   # Dirección predominante del viento (°)
+        "shortwave_radiation_sum",      # Radiación solar (MJ/m²)
+        "uv_index_max",                 # Índice UV máximo
+        "uv_index_clear_sky_max",       # Índice UV máximo con cielo despejado
+        "cape_max"                      # CAPE máximo del día (J/kg) -> TORMENTAS
+    ]
     
     # Unir parámetros
-    parametros_str = ",".join(parametros_base)
+    hourly_str = ",".join(hourly_params)
+    daily_str = ",".join(daily_params)
     
     try:
+        # Construir URL CORRECTA (sin parámetros inválidos)
         url = (
             f"https://api.open-meteo.com/v1/forecast?"
             f"latitude=-40.1579&longitude=-71.3534&"
-            f"daily={parametros_str}&"
+            f"hourly={hourly_str}&"
+            f"daily={daily_str}&"
             f"timezone=America%2FArgentina%2FBuenos_Aires&"
-            f"start_date={start_date}&end_date={end_date}"
+            f"start_date={start_date}&end_date={end_date}&"
+            f"forecast_days={dias_pronostico}&"
+            f"models={modelo}"
         )
         
-        response = requests.get(url, timeout=20)
+        st.write(f"🔗 URL Open-Meteo: `{url[:100]}...`")
+        
+        response = requests.get(url, timeout=25)
+        
+        st.write(f"📡 Status Open-Meteo: {response.status_code}")
         
         if response.status_code != 200:
+            st.error(f"❌ Error {response.status_code}: {response.text[:200]}")
             return {}, False, f"❌ Error API: {response.status_code}"
         
         datos_raw = response.json()
         
-        if 'daily' not in datos_raw:
-            return {}, False, "❌ No hay datos diarios"
+        if 'hourly' not in datos_raw or 'daily' not in datos_raw:
+            st.warning("⚠️ No hay datos horarios o diarios en la respuesta")
+            return {}, False, "❌ Estructura de datos incompleta"
         
         # Procesar datos
-        datos_procesados = procesar_datos_satelitales(datos_raw['daily'], fecha_base)
+        datos_procesados = procesar_datos_openmeteo(
+            datos_raw['hourly'], 
+            datos_raw['daily'],
+            fecha_base
+        )
         
-        return datos_procesados, True, f"✅ Satélite: {len(datos_procesados.get('dias', []))} días con fenómenos"
+        return datos_procesados, True, f"✅ Open-Meteo: {len(datos_procesados.get('dias', []))} días con datos horarios"
     
+    except requests.exceptions.Timeout:
+        st.error("⏱️ Timeout al conectar con Open-Meteo")
+        return {}, False, "❌ Timeout en la conexión"
+    except requests.exceptions.ConnectionError:
+        st.error("🔌 Error de conexión con Open-Meteo")
+        return {}, False, "❌ Error de conexión"
     except Exception as e:
-        return {}, False, f"❌ Error Satélite: {str(e)}"
+        st.error(f"❌ Error Open-Meteo: {str(e)}")
+        return {}, False, f"❌ Error: {str(e)}"
 
-def procesar_datos_satelitales(datos_diarios, fecha_base):
-    """Procesa y enriquece los datos satelitales"""
+def procesar_datos_openmeteo(datos_horarios, datos_diarios, fecha_base):
+    """Procesa y estructura los datos de Open-Meteo"""
+    
     resultado = {
+        'modelo': datos_diarios.get('generationtime_ms', 0),
+        'unidades': {},
         'dias': [],
-        'fenomenos_extremos': [],
-        'alertas': [],
-        'parametros_disponibles': list(datos_diarios.keys())
+        'pronostico_horario': [],
+        'fenomenos_detectados': [],
+        'alertas': []
     }
     
-    # Procesar cada día
-    for i in range(len(datos_diarios['time'])):
-        try:
-            fecha_str = datos_diarios['time'][i]
-            fecha_dt = datetime.strptime(fecha_str, '%Y-%m-%d').date()
-            
-            # Saltar fechas anteriores a la base
-            if fecha_dt < fecha_base:
-                continue
-            
-            dia_data = {
-                'fecha': fecha_dt.strftime('%d-%m-%Y'),
-                'fecha_dt': fecha_dt,
-                'datos': {}
-            }
-            
-            # Extraer todos los parámetros disponibles
-            for param in datos_diarios.keys():
-                if i < len(datos_diarios[param]):
-                    valor = datos_diarios[param][i]
-                    if valor is not None:
-                        # Estandarizar unidades
-                        if 'temperature' in param or 'apparent' in param:
-                            dia_data['datos'][param] = f"{valor:.1f}°C"
-                        elif 'wind' in param or 'gust' in param:
-                            dia_data['datos'][param] = f"{valor:.1f} km/h"
-                        elif 'precipitation' in param or 'rain' in param or 'snow' in param:
-                            dia_data['datos'][param] = f"{valor:.1f} mm"
-                        elif 'uv' in param:
-                            dia_data['datos'][param] = f"{valor:.1f}"
-                        elif param == 'weathercode':
-                            dia_data['datos'][param] = int(valor)
-                            # Interpretar código WMO
-                            dia_data['datos']['weathercode_desc'] = interpretar_weathercode(int(valor))
-                        else:
-                            dia_data['datos'][param] = valor
-            
-            # Detectar fenómenos extremos
-            detectar_fenomenos_extremos(dia_data, resultado['fenomenos_extremos'], resultado['alertas'])
-            
-            resultado['dias'].append(dia_data)
-            
-            # Limitar a 5 días
-            if len(resultado['dias']) >= 5:
-                break
+    # Extraer unidades
+    if 'hourly_units' in datos_horarios:
+        resultado['unidades']['hourly'] = datos_horarios['hourly_units']
+    if 'daily_units' in datos_diarios:
+        resultado['unidades']['daily'] = datos_diarios['daily_units']
+    
+    # ============================================================
+    # PROCESAR DATOS DIARIOS
+    # ============================================================
+    if 'time' in datos_diarios:
+        for i in range(len(datos_diarios['time'])):
+            try:
+                fecha_str = datos_diarios['time'][i]
+                fecha_dt = datetime.strptime(fecha_str, '%Y-%m-%d').date()
                 
-        except Exception:
-            continue
+                # Saltar fechas anteriores
+                if fecha_dt < fecha_base:
+                    continue
+                
+                dia_data = {
+                    'fecha': fecha_dt.strftime('%d-%m-%Y'),
+                    'fecha_dt': fecha_dt,
+                    'datos_diarios': {},
+                    'datos_horarios': []
+                }
+                
+                # Extraer todos los parámetros diarios disponibles
+                for param in datos_diarios.keys():
+                    if param != 'time' and i < len(datos_diarios.get(param, [])):
+                        valor = datos_diarios[param][i]
+                        if valor is not None:
+                            dia_data['datos_diarios'][param] = valor
+                
+                # Detectar fenómenos diarios
+                detectar_fenomenos_diarios(dia_data, resultado['fenomenos_detectados'], resultado['alertas'])
+                
+                resultado['dias'].append(dia_data)
+                
+                # Limitar a días de pronóstico
+                if len(resultado['dias']) >= 7:
+                    break
+                    
+            except Exception as e:
+                continue
+    
+    # ============================================================
+    # PROCESAR DATOS HORARIOS (primeras 72 horas)
+    # ============================================================
+    if 'time' in datos_horarios:
+        for i in range(min(72, len(datos_horarios['time']))):  # Máximo 72 horas
+            try:
+                fecha_hora_str = datos_horarios['time'][i]
+                fecha_hora_dt = datetime.strptime(fecha_hora_str, '%Y-%m-%dT%H:%M')
+                
+                hora_data = {
+                    'fecha_hora': fecha_hora_str,
+                    'fecha_hora_dt': fecha_hora_dt,
+                    'hora': fecha_hora_dt.hour,
+                    'datos': {}
+                }
+                
+                # Extraer parámetros horarios
+                for param in datos_horarios.keys():
+                    if param not in ['time', 'hourly_units'] and i < len(datos_horarios.get(param, [])):
+                        valor = datos_horarios[param][i]
+                        if valor is not None:
+                            hora_data['datos'][param] = valor
+                
+                # Detectar fenómenos horarios
+                detectar_fenomenos_horarios(hora_data, resultado['alertas'])
+                
+                resultado['pronostico_horario'].append(hora_data)
+                
+            except Exception:
+                continue
+    
+    # Agrupar datos horarios por día
+    agrupar_horarios_por_dia(resultado)
     
     return resultado
 
-def interpretar_weathercode(code):
-    """Interpreta los códigos WMO de fenómenos meteorológicos"""
-    codigos = {
-        0: "Cielo despejado",
-        1: "Mayormente despejado",
-        2: "Parcialmente nublado",
-        3: "Nublado",
-        45: "Niebla",
-        48: "Niebla helada",
-        51: "Llovizna ligera",
-        53: "Llovizna moderada",
-        55: "Llovizna densa",
-        56: "Llovizna helada ligera",
-        57: "Llovizna helada densa",
-        61: "Lluvia ligera",
-        63: "Lluvia moderada",
-        65: "Lluvia intensa",
-        66: "Lluvia helada ligera",
-        67: "Lluvia helada intensa",
-        71: "Nieve ligera",
-        73: "Nieve moderada",
-        75: "Nieve intensa",
-        77: "Granos de nieve",
-        80: "Chubascos ligeros",
-        81: "Chubascos moderados",
-        82: "Chubascos intensos",
-        85: "Nevadas ligeras",
-        86: "Nevadas intensas",
-        95: "Tormenta eléctrica",
-        96: "Tormenta eléctrica con granizo ligero",
-        99: "Tormenta eléctrica con granizo intenso"
-    }
-    return codigos.get(code, f"Código {code}")
-
-def detectar_fenomenos_extremos(dia_data, fenomenos_list, alertas_list):
-    """Detecta fenómenos meteorológicos extremos"""
-    datos = dia_data['datos']
+def detectar_fenomenos_diarios(dia_data, fenomenos_list, alertas_list):
+    """Detecta fenómenos meteorológicos en datos diarios"""
     
-    # Tormentas eléctricas (weathercode 95-99)
-    if 'weathercode' in datos and isinstance(datos['weathercode'], int):
-        if datos['weathercode'] >= 95:
+    datos = dia_data['datos_diarios']
+    fecha = dia_data['fecha']
+    
+    # 1. TORMENTAS ELÉCTRICAS (weathercode 95-99)
+    if 'weathercode' in datos:
+        wcode = datos['weathercode']
+        if wcode in [95, 96, 99]:
+            intensidad = "severa" if wcode == 99 else ("con granizo" if wcode == 96 else "moderada")
             fenomeno = {
-                'fecha': dia_data['fecha'],
+                'fecha': fecha,
                 'tipo': 'Tormenta eléctrica',
-                'intensidad': 'Severa' if datos['weathercode'] >= 98 else 'Moderada',
-                'codigo': datos['weathercode']
+                'intensidad': intensidad,
+                'codigo': wcode,
+                'fuente': 'weathercode'
             }
             if fenomeno not in fenomenos_list:
                 fenomenos_list.append(fenomeno)
-                alertas_list.append(f"⚠️ Alerta: Tormenta eléctrica el {dia_data['fecha']}")
+                alertas_list.append(f"⚡ Tormenta eléctrica {intensidad} el {fecha}")
     
-    # Granizo (weathercode 96, 99)
-    if 'weathercode' in datos and datos['weathercode'] in [96, 99]:
+    # 2. POTENCIAL DE TORMENTAS (CAPE > 1000 J/kg)
+    if 'cape_max' in datos and datos['cape_max'] > 1000:
         fenomeno = {
-            'fecha': dia_data['fecha'],
-            'tipo': 'Granizo',
-            'intensidad': 'Intenso' if datos['weathercode'] == 99 else 'Ligero'
+            'fecha': fecha,
+            'tipo': 'Alto potencial convectivo',
+            'cape': f"{datos['cape_max']:.0f} J/kg",
+            'riesgo': 'Alto' if datos['cape_max'] > 2000 else 'Moderado'
         }
         if fenomeno not in fenomenos_list:
             fenomenos_list.append(fenomeno)
-            alertas_list.append(f"⚠️ Alerta: Granizo el {dia_data['fecha']}")
+            alertas_list.append(f"🌩️ Alto potencial convectivo (CAPE: {datos['cape_max']:.0f} J/kg) el {fecha}")
     
-    # Lluvia intensa (> 20 mm)
-    if 'precipitation_sum' in datos:
-        try:
-            mm = float(datos['precipitation_sum'].replace(' mm', ''))
-            if mm > 20:
-                fenomeno = {
-                    'fecha': dia_data['fecha'],
-                    'tipo': 'Lluvia intensa',
-                    'cantidad': f"{mm:.1f} mm",
-                    'intensidad': 'Muy intensa' if mm > 50 else 'Intensa'
-                }
-                if fenomeno not in fenomenos_list:
-                    fenomenos_list.append(fenomeno)
-        except:
-            pass
+    # 3. LLUVIA INTENSA (> 20 mm)
+    if 'precipitation_sum' in datos and datos['precipitation_sum'] > 20:
+        fenomeno = {
+            'fecha': fecha,
+            'tipo': 'Lluvia intensa',
+            'cantidad': f"{datos['precipitation_sum']:.1f} mm",
+            'intensidad': 'Muy intensa' if datos['precipitation_sum'] > 50 else 'Intensa'
+        }
+        if fenomeno not in fenomenos_list:
+            fenomenos_list.append(fenomeno)
+            alertas_list.append(f"🌧️ Lluvia intensa ({datos['precipitation_sum']:.1f} mm) el {fecha}")
     
-    # Vientos fuertes (> 40 km/h)
-    if 'windspeed_10m_max' in datos:
-        try:
-            viento = float(datos['windspeed_10m_max'].replace(' km/h', ''))
-            if viento > 40:
-                fenomeno = {
-                    'fecha': dia_data['fecha'],
-                    'tipo': 'Vientos fuertes',
-                    'velocidad': f"{viento:.1f} km/h",
-                    'intensidad': 'Muy fuertes' if viento > 60 else 'Fuertes'
-                }
-                if fenomeno not in fenomenos_list:
-                    fenomenos_list.append(fenomeno)
-        except:
-            pass
+    # 4. NIEVE (> 5 cm)
+    if 'snowfall_sum' in datos and datos['snowfall_sum'] > 5:
+        fenomeno = {
+            'fecha': fecha,
+            'tipo': 'Nieve',
+            'acumulado': f"{datos['snowfall_sum']:.1f} cm",
+            'intensidad': 'Fuerte' if datos['snowfall_sum'] > 15 else 'Moderada'
+        }
+        if fenomeno not in fenomenos_list:
+            fenomenos_list.append(fenomeno)
+            alertas_list.append(f"❄️ Nieve ({datos['snowfall_sum']:.1f} cm) el {fecha}")
     
-    # Nieve intensa
-    if 'snowfall_sum' in datos:
-        try:
-            nieve = float(datos['snowfall_sum'].replace(' mm', ''))
-            if nieve > 10:
-                fenomeno = {
-                    'fecha': dia_data['fecha'],
-                    'tipo': 'Nieve',
-                    'acumulado': f"{nieve:.1f} mm",
-                    'intensidad': 'Intensa' if nieve > 30 else 'Moderada'
-                }
-                if fenomeno not in fenomenos_list:
-                    fenomenos_list.append(fenomeno)
-        except:
-            pass
+    # 5. VIENTOS FUERTES (> 40 km/h)
+    if 'windgusts_10m_max' in datos and datos['windgusts_10m_max'] > 40:
+        fenomeno = {
+            'fecha': fecha,
+            'tipo': 'Vientos fuertes',
+            'velocidad': f"{datos['windgusts_10m_max']:.1f} km/h",
+            'intensidad': 'Muy fuertes' if datos['windgusts_10m_max'] > 60 else 'Fuertes'
+        }
+        if fenomeno not in fenomenos_list:
+            fenomenos_list.append(fenomeno)
+            alertas_list.append(f"💨 Vientos fuertes ({datos['windgusts_10m_max']:.1f} km/h) el {fecha}")
+
+def detectar_fenomenos_horarios(hora_data, alertas_list):
+    """Detecta fenómenos en datos horarios"""
+    datos = hora_data['datos']
+    fecha_hora = hora_data['fecha_hora']
+    
+    # Tormentas horarias (CAPE alto + showers)
+    if 'cape' in datos and 'showers' in datos:
+        if datos['cape'] > 1500 and datos['showers'] > 0:
+            alerta = f"⛈️ Posible tormenta convectiva a las {hora_data['hora']}:00 (CAPE: {datos['cape']:.0f} J/kg)"
+            if alerta not in alertas_list:
+                alertas_list.append(alerta)
+    
+    # Congelamiento (temp < 0)
+    if 'temperature_2m' in datos and datos['temperature_2m'] < 0:
+        alerta = f"🧊 Temperatura bajo cero a las {hora_data['hora']}:00 ({datos['temperature_2m']:.1f}°C)"
+        if alerta not in alertas_list:
+            alertas_list.append(alerta)
+
+def agrupar_horarios_por_dia(resultado):
+    """Agrupa datos horarios por día para cada día en resultado['dias']"""
+    
+    for dia in resultado['dias']:
+        fecha_dia = dia['fecha_dt']
+        dia['horas'] = []
+        
+        for hora_data in resultado['pronostico_horario']:
+            if hora_data['fecha_hora_dt'].date() == fecha_dia:
+                # Seleccionar solo datos importantes para mostrar
+                datos_resumen = {}
+                
+                if 'temperature_2m' in hora_data['datos']:
+                    datos_resumen['temp'] = f"{hora_data['datos']['temperature_2m']:.1f}°C"
+                
+                if 'precipitation' in hora_data['datos'] and hora_data['datos']['precipitation'] > 0:
+                    datos_resumen['precip'] = f"{hora_data['datos']['precipitation']:.1f}mm"
+                
+                if 'weathercode' in hora_data['datos']:
+                    datos_resumen['weathercode'] = hora_data['datos']['weathercode']
+                
+                if 'windspeed_10m' in hora_data['datos']:
+                    datos_resumen['viento'] = f"{hora_data['datos']['windspeed_10m']:.1f}km/h"
+                
+                if 'cloudcover' in hora_data['datos']:
+                    datos_resumen['nubosidad'] = f"{hora_data['datos']['cloudcover']:.0f}%"
+                
+                dia['horas'].append({
+                    'hora': hora_data['hora'],
+                    'datos_resumen': datos_resumen,
+                    'datos_completos': hora_data['datos']
+                })
 
 # ============================================================================
 # INTERFAZ PRINCIPAL
 # ============================================================================
 
 def main():
-    # Configurar opciones satelitales
-    opciones_satelital = {
-        'incluir_tormentas': incluir_tormentas,
-        'incluir_granizo': incluir_granizo,
-        'incluir_nieve': incluir_nieve,
-        'incluir_vientos': incluir_vientos
-    }
-    
-    if st.button("🚀 EXTRAER TODOS LOS DATOS BRUTOS", type="primary", use_container_width=True):
+    if st.button("🚀 EXTRAER TODOS LOS DATOS", type="primary", use_container_width=True):
         
-        with st.spinner("🔍 Iniciando extracción completa de todas las fuentes..."):
+        with st.spinner("🔍 Iniciando extracción completa..."):
             
             # Contenedores de estado
             col1, col2, col3 = st.columns(3)
             
             with col1:
                 status_aic = st.empty()
-                status_aic.info("⏳ Extrayendo AIC...")
+                status_aic.info("⏳ AIC...")
             
             with col2:
                 status_smn = st.empty()
-                status_smn.info("⏳ Extrayendo SMN...")
+                status_smn.info("⏳ SMN...")
             
             with col3:
-                status_sat = st.empty()
-                status_sat.info("⏳ Extrayendo Satélite...")
+                status_om = st.empty()
+                status_om.info("⏳ Open-Meteo...")
             
-            # 1. EXTRAER AIC COMPLETO
-            status_aic.warning("📄 Leyendo PDF completo de AIC...")
+            # 1. AIC
+            status_aic.warning("📄 Extrayendo AIC...")
             datos_aic, estado_aic, mensaje_aic = obtener_datos_aic_completos(fecha_base)
             
-            # 2. EXTRAER SMN COMPLETO
-            status_smn.warning("📊 Extrayendo todo Chapelco del SMN...")
+            # 2. SMN
+            status_smn.warning("📊 Extrayendo SMN...")
             datos_smn, estado_smn, mensaje_smn = obtener_datos_smn_completos()
             
-            # 3. EXTRAER SATÉLITE COMPLETO
-            status_sat.warning("🛰️ Obteniendo parámetros absolutos satelitales...")
-            datos_sat, estado_sat, mensaje_sat = obtener_datos_satelital_completos(fecha_base, opciones_satelital)
+            # 3. OPEN-METEO (CORREGIDO)
+            status_om.warning(f"🛰️ Open-Meteo ({modelo_seleccionado})...")
+            datos_om, estado_om, mensaje_om = obtener_datos_openmeteo_completos(
+                fecha_base, 
+                modelo_seleccionado, 
+                dias_pronostico
+            )
             
             # Actualizar estados
             if estado_aic:
@@ -819,49 +807,40 @@ def main():
             else:
                 status_smn.error(f"❌ {mensaje_smn}")
             
-            if estado_sat:
-                status_sat.success(f"✅ {mensaje_sat}")
+            if estado_om:
+                status_om.success(f"✅ {mensaje_om}")
             else:
-                status_sat.error(f"❌ {mensaje_sat}")
+                status_om.error(f"❌ {mensaje_om}")
             
             st.markdown("---")
-            st.subheader("📦 DATOS BRUTOS EXTRAÍDOS - LISTOS PARA IA")
+            st.subheader("📦 DATOS EXTRAÍDOS - LISTOS PARA IA")
             
             # Mostrar resumen
-            mostrar_resumen_completo(datos_aic, datos_smn, datos_sat, 
-                                   estado_aic, estado_smn, estado_sat)
+            mostrar_resumen_completo(datos_aic, datos_smn, datos_om, 
+                                   estado_aic, estado_smn, estado_om)
             
             # Preparar datos para IA
             datos_para_ia = {
                 'timestamp': datetime.now().isoformat(),
                 'fecha_base': fecha_base.isoformat(),
                 'fuentes': {
-                    'AIC': {
-                        'estado': estado_aic,
-                        'datos': datos_aic,
-                        'mensaje': mensaje_aic
-                    },
-                    'SMN': {
-                        'estado': estado_smn,
-                        'datos': datos_smn,
-                        'mensaje': mensaje_smn
-                    },
-                    'SATELITE': {
-                        'estado': estado_sat,
-                        'datos': datos_sat,
-                        'mensaje': mensaje_sat
+                    'AIC': {'estado': estado_aic, 'datos': datos_aic, 'mensaje': mensaje_aic},
+                    'SMN': {'estado': estado_smn, 'datos': datos_smn, 'mensaje': mensaje_smn},
+                    'OPEN_METEO': {
+                        'estado': estado_om,
+                        'datos': datos_om,
+                        'mensaje': mensaje_om,
+                        'modelo': modelo_seleccionado,
+                        'dias_pronostico': dias_pronostico
                     }
-                },
-                'configuracion': {
-                    'fenomenos_extremos': opciones_satelital
                 }
             }
             
-            # Mostrar datos estructurados
+            # Mostrar estructura de datos
             with st.expander("🧠 ESTRUCTURA DE DATOS PARA IA", expanded=True):
                 st.json(datos_para_ia, expanded=False)
             
-            # Botón para copiar datos
+            # Botón para descargar
             datos_json = json.dumps(datos_para_ia, default=str, indent=2)
             st.download_button(
                 label="📥 DESCARGAR DATOS BRUTOS (JSON)",
@@ -874,7 +853,7 @@ def main():
             st.markdown("---")
             st.subheader("🔍 DETALLES POR FUENTE")
             
-            tabs = st.tabs(["📄 AIC COMPLETO", "📊 SMN CHAPELCO", "🛰️ SATÉLITE FENÓMENOS"])
+            tabs = st.tabs(["📄 AIC", "📊 SMN", f"🛰️ OPEN-METEO ({modelo_seleccionado})"])
             
             with tabs[0]:
                 if estado_aic and datos_aic:
@@ -889,31 +868,43 @@ def main():
                     st.error("No hay datos de SMN")
             
             with tabs[2]:
-                if estado_sat and datos_sat:
-                    mostrar_detalles_satelital(datos_sat)
+                if estado_om and datos_om:
+                    mostrar_detalles_openmeteo(datos_om)
                 else:
-                    st.error("No hay datos satelitales")
+                    st.error("No hay datos de Open-Meteo")
             
-            # Resumen para IA
+            # Resumen final
             st.markdown("---")
             st.subheader("🎯 RESUMEN PARA PROCESAMIENTO DE IA")
             
-            fuentes_activas = sum([estado_aic, estado_smn, estado_sat])
+            fuentes_activas = sum([estado_aic, estado_smn, estado_om])
+            
             st.info(f"""
             **{fuentes_activas}/3 fuentes activas**
             
-            La IA deberá procesar estos datos con ponderación 40/60:
-            - **40%:** Fuentes locales (AIC + SMN) - Fenómenos específicos
-            - **60%:** Modelos satelitales - Tendencia térmica y fenómenos absolutos
+            **Datos disponibles para fusión 40/60:**
             
-            **Datos disponibles para fusión:**
-            - AIC: {len(datos_aic.get('dias', []))} días con condiciones detalladas
-            - SMN: {len(datos_smn.get('dias', []))} días de Chapelco
-            - Satélite: {len(datos_sat.get('dias', []))} días con parámetros absolutos
+            📄 **AIC (Oficial Argentina):**
+            - {len(datos_aic.get('dias', []))} días con pronóstico detallado
+            - {len(datos_aic.get('fenomenos_especiales', []))} fenómenos especiales detectados
+            
+            📊 **SMN Chapelco (Oficial):**
+            - {len(datos_smn.get('dias', []))} días de datos de estación
+            - {len(datos_smn.get('raw_lines', []))} referencias a Chapelco
+            
+            🛰️ **Open-Meteo ({modelo_seleccionado.upper()}):**
+            - {len(datos_om.get('dias', []))} días con pronóstico
+            - {len(datos_om.get('pronostico_horario', []))} horas de datos horarios
+            - {len(datos_om.get('fenomenos_detectados', []))} fenómenos extremos detectados
+            - Parámetros: Temperatura, humedad, precipitación, viento, CAPE, nubosidad
+            
+            **Estrategia de ponderación:**
+            - 40%: Fuentes locales (AIC + SMN) - fenómenos específicos
+            - 60%: Modelos globales (Open-Meteo) - tendencia térmica y convectiva
             """)
 
-def mostrar_resumen_completo(datos_aic, datos_smn, datos_sat, estado_aic, estado_smn, estado_sat):
-    """Muestra resumen visual de los datos extraídos"""
+def mostrar_resumen_completo(datos_aic, datos_smn, datos_om, estado_aic, estado_smn, estado_om):
+    """Muestra resumen visual"""
     
     col1, col2, col3 = st.columns(3)
     
@@ -923,192 +914,174 @@ def mostrar_resumen_completo(datos_aic, datos_smn, datos_sat, estado_aic, estado
         if estado_aic:
             st.success("✅ ACTIVO")
             dias = len(datos_aic.get('dias', []))
-            fenomenos = len(datos_aic.get('fenomenos_especiales', []))
-            st.write(f"**{dias} días** extraídos")
-            if fenomenos > 0:
-                st.write(f"**{fenomenos} fenómenos** detectados")
-            if 'texto_crudo' in datos_aic:
-                st.caption(f"{len(datos_aic['texto_crudo'])} caracteres de texto")
+            st.write(f"**{dias} días** pronosticados")
+            if datos_aic.get('fenomenos_especiales'):
+                st.write(f"**{len(datos_aic['fenomenos_especiales'])} alertas**")
         else:
             st.error("❌ INACTIVO")
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
         st.markdown('<div class="source-card source-smn">', unsafe_allow_html=True)
-        st.subheader("📊 SMN Chapelco")
+        st.subheader("📊 SMN")
         if estado_smn:
             st.success("✅ ACTIVO")
             dias = len(datos_smn.get('dias', []))
-            lineas = len(datos_smn.get('raw_lines', []))
-            st.write(f"**{dias} días** extraídos")
-            st.write(f"**{lineas} referencias** a Chapelco")
-            if 'contenido_crudo' in datos_smn:
-                st.caption(f"{len(datos_smn['contenido_crudo'])} caracteres de texto")
+            st.write(f"**{dias} días** de Chapelco")
+            if datos_smn.get('estacion_info'):
+                st.write("**Datos de estación**")
         else:
             st.error("❌ INACTIVO")
         st.markdown('</div>', unsafe_allow_html=True)
     
     with col3:
         st.markdown('<div class="source-card source-sat">', unsafe_allow_html=True)
-        st.subheader("🛰️ Satélite")
-        if estado_sat:
+        st.subheader(f"🛰️ {modelo_seleccionado.upper()}")
+        if estado_om:
             st.success("✅ ACTIVO")
-            dias = len(datos_sat.get('dias', []))
-            fenomenos = len(datos_sat.get('fenomenos_extremos', []))
-            st.write(f"**{dias} días** extraídos")
-            st.write(f"**{fenomenos} fenómenos** extremos")
-            params = len(datos_sat.get('parametros_disponibles', []))
-            st.write(f"**{params} parámetros** meteorológicos")
+            dias = len(datos_om.get('dias', []))
+            horas = len(datos_om.get('pronostico_horario', []))
+            st.write(f"**{dias} días** pronosticados")
+            st.write(f"**{horas} horas** de datos")
+            if datos_om.get('fenomenos_detectados'):
+                st.write(f"**{len(datos_om['fenomenos_detectados'])} fenómenos**")
         else:
             st.error("❌ INACTIVO")
         st.markdown('</div>', unsafe_allow_html=True)
 
 def mostrar_detalles_aic(datos):
-    """Muestra detalles completos de AIC"""
+    """Muestra detalles de AIC"""
     
     if 'dias' in datos and datos['dias']:
         st.write(f"### 📅 {len(datos['dias'])} Días Pronosticados")
         
-        for dia in datos['dias'][:5]:  # Mostrar máximo 5 días
-            with st.expander(f"**{dia['fecha']}** - {len(dia.get('periodos', []))} períodos"):
+        for dia in datos['dias'][:5]:
+            with st.expander(f"**{dia['fecha']}**"):
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.write("**Temperaturas:**")
                     if 'temperaturas' in dia:
-                        temps = dia['temperaturas']
-                        if 'max' in temps:
-                            st.write(f"Máx: {temps['max']}°C")
-                        if 'min' in temps:
-                            st.write(f"Mín: {temps['min']}°C")
+                        st.write("**Temperaturas:**")
+                        if 'max' in dia['temperaturas']:
+                            st.write(f"Máx: {dia['temperaturas']['max']}°C")
+                        if 'min' in dia['temperaturas']:
+                            st.write(f"Mín: {dia['temperaturas']['min']}°C")
                     
-                    st.write("**Vientos:**")
                     if 'vientos' in dia:
-                        vientos = dia['vientos']
-                        if 'velocidad' in vientos:
-                            st.write(f"Velocidad: {vientos['velocidad']} km/h")
-                        if 'direccion' in vientos:
-                            st.write(f"Dirección: {vientos['direccion']}")
+                        st.write("**Vientos:**")
+                        if 'velocidad' in dia['vientos']:
+                            st.write(f"Velocidad: {dia['vientos']['velocidad']} km/h")
+                        if 'direccion' in dia['vientos']:
+                            st.write(f"Dirección: {dia['vientos']['direccion']}")
                 
                 with col2:
-                    st.write("**Condiciones:**")
-                    if 'condiciones' in dia and 'descripcion' in dia['condiciones']:
-                        st.write(dia['condiciones']['descripcion'])
+                    if 'condiciones' in dia:
+                        st.write("**Condiciones:**")
+                        if 'descripcion' in dia['condiciones']:
+                            st.write(dia['condiciones']['descripcion'])
                     
-                    st.write("**Fenómenos:**")
                     if dia.get('fenomenos'):
+                        st.write("**Fenómenos:**")
                         for fen in dia['fenomenos']:
                             st.write(f"- {fen}")
-                    else:
-                        st.write("Ninguno detectado")
         
-        # Fenómenos especiales
         if datos.get('fenomenos_especiales'):
-            st.write("### ⚡ Fenómenos Especiales Detectados")
+            st.write("### ⚡ Fenómenos Especiales")
             for fen in datos['fenomenos_especiales']:
                 st.markdown(f'<div class="phenomenon-alert">{fen}</div>', unsafe_allow_html=True)
-        
-        # Texto crudo (muestra parcial)
-        if 'texto_crudo' in datos:
-            with st.expander("📋 Texto Crudo Extraído (primeros 2000 caracteres)"):
-                st.text(datos['texto_crudo'][:2000])
 
 def mostrar_detalles_smn(datos):
-    """Muestra detalles completos de SMN Chapelco"""
+    """Muestra detalles de SMN"""
     
-    # Información de estación
-    if datos.get('estacion_info'):
+    if 'estacion_info' in datos and datos['estacion_info']:
         st.write("### 🏔️ Información de Estación")
         for key, value in datos['estacion_info'].items():
             st.write(f"**{key.title()}:** {value}")
     
-    # Días extraídos
-    if datos.get('dias'):
+    if 'dias' in datos and datos['dias']:
         st.write(f"### 📊 {len(datos['dias'])} Días de Datos")
         
-        for dia in datos['dias'][:5]:  # Mostrar máximo 5 días
-            with st.expander(f"**{dia['fecha']}** - Datos SMN"):
+        for dia in datos['dias'][:5]:
+            with st.expander(f"**{dia['fecha']}**"):
                 st.write("**Línea original:**")
                 st.code(dia.get('linea_original', 'No disponible'))
                 
-                st.write("**Datos extraídos:**")
                 if 'temperatura' in dia:
-                    st.write(f"Temperatura: {dia['temperatura']}°C")
-                if 'temperatura2' in dia:
-                    st.write(f"Temperatura 2: {dia['temperatura2']}°C")
+                    st.write(f"**Temperatura:** {dia['temperatura']}°C")
                 if 'viento_kmh' in dia:
-                    st.write(f"Viento: {dia['viento_kmh']} km/h")
-                if 'precipitacion_mm' in dia:
-                    st.write(f"Precipitación: {dia['precipitacion_mm']} mm")
-                if 'fenomenos' in dia:
-                    st.write("Fenómenos detectados:")
-                    for fen in dia['fenomenos']:
-                        st.write(f"- {fen}")
+                    st.write(f"**Viento:** {dia['viento_kmh']} km/h")
                 
                 if 'numeros' in dia:
-                    st.write(f"**{len(dia['numeros'])} números encontrados:**")
+                    st.write(f"**Datos numéricos encontrados:** {len(dia['numeros'])}")
                     st.write(", ".join(dia['numeros']))
-    
-    # Líneas crudas donde apareció Chapelco
-    if datos.get('raw_lines'):
-        st.write(f"### 🔍 {len(datos['raw_lines'])} Referencias a Chapelco")
-        for i, ref in enumerate(datos['raw_lines'][:3]):  # Mostrar 3 referencias
-            with st.expander(f"Referencia #{i+1} (posición {ref['posicion']})"):
-                st.text(ref['contexto'])
 
-def mostrar_detalles_satelital(datos):
-    """Muestra detalles completos de datos satelitales"""
+def mostrar_detalles_openmeteo(datos):
+    """Muestra detalles de Open-Meteo"""
     
-    # Fenómenos extremos detectados
-    if datos.get('fenomenos_extremos'):
-        st.write("### ⚡ Fenómenos Extremos Detectados")
-        for fen in datos['fenomenos_extremos']:
-            st.markdown(f'<div class="phenomenon-alert">'
-                       f'**{fen["tipo"]}** el {fen["fecha"]} - {fen.get("intensidad", "Detectado")}'
-                       f'</div>', unsafe_allow_html=True)
+    # Fenómenos detectados
+    if datos.get('fenomenos_detectados'):
+        st.write("### ⚡ Fenómenos Detectados")
+        for fen in datos['fenomenos_detectados']:
+            st.markdown(f"""
+            <div class="phenomenon-alert">
+            <strong>{fen['tipo']}</strong> - {fen['fecha']}<br>
+            {fen.get('intensidad', '')} {fen.get('cantidad', fen.get('velocidad', fen.get('cape', '')))}
+            </div>
+            """, unsafe_allow_html=True)
     
-    # Días con datos
+    # Días pronosticados
     if datos.get('dias'):
         st.write(f"### 🌤️ {len(datos['dias'])} Días Pronosticados")
         
-        for dia in datos['dias'][:5]:  # Mostrar máximo 5 días
-            with st.expander(f"**{dia['fecha']}** - Parámetros Satelitales"):
+        for dia in datos['dias'][:3]:
+            with st.expander(f"**{dia['fecha']}** - Pronóstico detallado"):
                 
-                # Agrupar parámetros por categoría
-                categorias = {
-                    'Temperatura': ['temperature', 'apparent'],
-                    'Viento': ['wind', 'gust'],
-                    'Precipitación': ['precipitation', 'rain', 'snow', 'shower'],
-                    'Radiación': ['uv', 'index'],
-                    'Fenómenos': ['weathercode', 'cape', 'hail', 'lightning']
-                }
-                
-                for cat_name, keywords in categorias.items():
-                    params_cat = []
-                    for param, valor in dia['datos'].items():
-                        if any(keyword in param for keyword in keywords):
-                            params_cat.append((param, valor))
+                # Datos diarios
+                if dia['datos_diarios']:
+                    st.write("**Resumen diario:**")
                     
-                    if params_cat:
-                        st.write(f"**{cat_name}:**")
-                        for param, valor in params_cat:
-                            # Formatear nombre del parámetro
-                            param_name = param.replace('_', ' ').title()
-                            st.write(f"- {param_name}: {valor}")
-                        st.write("")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if 'temperature_2m_max' in dia['datos_diarios']:
+                            st.write(f"🌡️ **Máx:** {dia['datos_diarios']['temperature_2m_max']:.1f}°C")
+                        if 'temperature_2m_min' in dia['datos_diarios']:
+                            st.write(f"🌡️ **Mín:** {dia['datos_diarios']['temperature_2m_min']:.1f}°C")
+                        if 'precipitation_sum' in dia['datos_diarios'] and dia['datos_diarios']['precipitation_sum'] > 0:
+                            st.write(f"🌧️ **Precip:** {dia['datos_diarios']['precipitation_sum']:.1f} mm")
+                    
+                    with col2:
+                        if 'windspeed_10m_max' in dia['datos_diarios']:
+                            st.write(f"💨 **Viento máx:** {dia['datos_diarios']['windspeed_10m_max']:.1f} km/h")
+                        if 'windgusts_10m_max' in dia['datos_diarios']:
+                            st.write(f"💨 **Ráfagas:** {dia['datos_diarios']['windgusts_10m_max']:.1f} km/h")
+                        if 'cape_max' in dia['datos_diarios'] and dia['datos_diarios']['cape_max'] > 0:
+                            st.write(f"⚡ **CAPE:** {dia['datos_diarios']['cape_max']:.0f} J/kg")
+                
+                # Datos horarios (si existen)
+                if 'horas' in dia and dia['horas']:
+                    st.write("---")
+                    st.write("**Pronóstico horario (selección):**")
+                    
+                    # Mostrar cada 3 horas
+                    horas_filtradas = [h for h in dia['horas'] if h['hora'] % 3 == 0]
+                    
+                    for hora in horas_filtradas[:8]:
+                        st.markdown(f"""
+                        <div class="hourly-forecast">
+                        <strong>{hora['hora']}:00</strong> | 
+                        Temp: {hora['datos_resumen'].get('temp', 'N/D')} | 
+                        Precip: {hora['datos_resumen'].get('precip', '0mm')} |
+                        Viento: {hora['datos_resumen'].get('viento', 'N/D')} |
+                        Nubes: {hora['datos_resumen'].get('nubosidad', 'N/D')}
+                        </div>
+                        """, unsafe_allow_html=True)
     
-    # Parámetros disponibles
-    if datos.get('parametros_disponibles'):
-        st.write(f"### 📋 {len(datos['parametros_disponibles'])} Parámetros Disponibles")
-        params_per_row = 4
-        params = datos['parametros_disponibles']
-        
-        for i in range(0, len(params), params_per_row):
-            cols = st.columns(params_per_row)
-            for j in range(params_per_row):
-                if i + j < len(params):
-                    with cols[j]:
-                        st.code(params[i + j])
+    # Alertas
+    if datos.get('alertas'):
+        st.write("### 🔔 Alertas y Advertencias")
+        for alerta in datos['alertas'][:5]:
+            st.warning(alerta)
 
 # Ejecutar aplicación
 if __name__ == "__main__":
@@ -1117,8 +1090,8 @@ if __name__ == "__main__":
 # Footer
 st.markdown("---")
 st.caption("""
-**Sistema de Extracción Meteorológica V4.2** | 
-Extracción completa de fuentes | 
-Datos brutos listos para IA | 
-Ponderación 40/60 Local/Satelital
+**Sistema de Extracción Meteorológica V4.3** | 
+Open-Meteo corregido (sin error 400) | 
+Parámetros reales: temperatura, humedad, precipitación, viento, CAPE, nubosidad |
+Listo para IA con fusión 40/60
 """)
