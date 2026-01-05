@@ -28,7 +28,6 @@ st.markdown("""
         color: #f0f2f6; 
         border: 1px solid #444; 
         white-space: pre-wrap;
-        font-family: 'Helvetica Neue', sans-serif;
     }
     .testigo-fuente { 
         font-size: 0.9rem; 
@@ -43,24 +42,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# 2. LÓGICA DE INTELIGENCIA ARTIFICIAL (GEMINI 3 - DOBLE MOTOR)
+# 2. LÓGICA DE IA (GEMINI 3 - DOBLE MOTOR CON FALLBACK)
 # ============================================================================
 def llamar_ia_con_fallback(prompt):
-    """
-    Intenta ejecutar la síntesis con la Generación 3 de Gemini.
-    Si falla el modelo principal, rota automáticamente al modelo Lite.
-    """
+    # Lista de motores prioritarios para 2026
     motores = [
-        "models/gemini-3-flash",      # Motor Principal solicitado
+        "models/gemini-3-flash",      # Motor Principal
         "models/gemini-3-flash-lite", # Respaldo veloz
-        "models/gemini-1.5-flash"     # Última instancia de seguridad
+        "models/gemini-2.0-flash",    # Estabilidad comprobada
+        "models/gemini-1.5-flash"     # Legacy de seguridad
     ]
     
     ultimo_error = ""
     for motor in motores:
         try:
             model = genai.GenerativeModel(motor)
-            # Configuración para evitar filtros innecesarios en clima
             response = model.generate_content(prompt)
             if response.text:
                 return response.text, motor.replace("models/", "").upper()
@@ -68,17 +64,16 @@ def llamar_ia_con_fallback(prompt):
             ultimo_error = str(e)
             continue
             
-    return f"❌ Error crítico de conexión con Gemini 3: {ultimo_error}", "NINGUNO"
+    return f"❌ Error crítico: Ningún motor de IA respondió. Detalle: {ultimo_error}", "NINGUNO"
 
 # ============================================================================
-# 3. FUNCIONES DE EXTRACCIÓN (MOTORES DE DATOS)
+# 3. EXTRACCIÓN DE DATOS (AIC, SMN, OPEN-METEO)
 # ============================================================================
 
 def obtener_datos_aic():
     try:
-        # URL disparadora del pronóstico extendido
         url = "https://www.aic.gob.ar/sitio/extendido-pdf?id_localidad=22&id_pronostico=1"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         session = requests.Session()
         session.get("https://www.aic.gob.ar", headers=headers, verify=False, timeout=10)
         r = session.get(url, headers=headers, verify=False, timeout=30)
@@ -97,94 +92,87 @@ def obtener_datos_smn():
             with z.open(nombre_txt) as f:
                 contenido = f.read().decode('utf-8', errors='ignore')
                 if "CHAPELCO_AERO" in contenido:
-                    # Extraer solo el bloque relevante
                     return contenido.split("CHAPELCO_AERO")[1].split("=")[0].strip(), True
         return None, False
     except: return None, False
 
-def obtener_datos_openmeteo(fecha):
+def obtener_datos_openmeteo():
     try:
-        # Modelo global satelital
-        url = (f"https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35"
-               f"&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,precipitation_sum"
-               f"&timezone=America%2FArgentina%2FBuenos_Aires")
+        url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,precipitation_sum&timezone=America%2FArgentina%2FBuenos_Aires"
         res = requests.get(url, timeout=15).json()
         return res, True
     except: return None, False
 
 # ============================================================================
-# 4. INTERFAZ PRINCIPAL
+# 4. INTERFAZ (SIDEBAR Y DIAGNÓSTICO)
 # ============================================================================
-
-# Barra lateral (Sidebar) limpia: Solo controles esenciales
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/869/869869.png", width=80)
-    st.header("Configuración")
-    fecha_base = st.date_input("Fecha del Reporte", datetime.now())
+    st.header("🏔️ Control SMA")
+    fecha_base = st.date_input("Fecha Inicio", datetime.now())
     st.markdown("---")
-    st.write("**Lógica aplicada:**")
-    st.write("🔹 40% AIC/SMN (Local)")
-    st.write("🔹 60% Satelital (Global)")
-
-st.title("🏔️ Generador de Síntesis Meteorológica SMA")
-st.subheader("San Martín de los Andes, Neuquén")
-
-if st.button("🚀 GENERAR PRONÓSTICO COMPLETO", type="primary", use_container_width=True):
     
-    # 1. Configurar API
+    # BOTÓN DE DIAGNÓSTICO DE VERSIONES
+    with st.expander("🛠️ Diagnóstico de IA"):
+        if st.button("Ver modelos disponibles"):
+            try:
+                genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+                modelos_oficiales = genai.list_models()
+                st.write("Modelos activos en tu cuenta:")
+                for m in modelos_oficiales:
+                    if 'generateContent' in m.supported_generation_methods:
+                        st.code(m.name)
+            except Exception as e:
+                st.error(f"Error: {e}")
+    
+    st.markdown("---")
+    st.caption("Ponderación: 40% Local | 60% Global")
+
+# ============================================================================
+# 5. EJECUCIÓN PRINCIPAL
+# ============================================================================
+st.title("🏔️ Generador de Síntesis Profesional")
+
+if st.button("🚀 GENERAR REPORTE AHORA", type="primary", use_container_width=True):
+    
     try:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     except:
-        st.error("🔑 Error: No se encontró la API Key en Streamlit Secrets.")
+        st.error("❌ Falta GOOGLE_API_KEY en los Secrets de Streamlit.")
         st.stop()
 
-    with st.status("Sincronizando fuentes oficiales y modelos...") as status:
-        # 2. Captura de datos en paralelo
+    with st.status("Sincronizando fuentes y procesando...") as status:
+        # Extracción
         datos_aic, aic_ok = obtener_datos_aic()
         datos_smn, smn_ok = obtener_datos_smn()
-        datos_om, om_ok = obtener_datos_openmeteo(fecha_base)
+        datos_om, om_ok = obtener_datos_openmeteo()
         
-        status.update(label="Analizando datos con Gemini 3...", state="running")
+        status.update(label="Fusión de datos con Gemini 3...", state="running")
         
-        # 3. Prompt con tu Estructura de Memoria y Ponderación 40/60
+        # Prompt Estructurado
         prompt = f"""
-        FECHA DE REFERENCIA: {fecha_base.strftime('%A %d de %B de %Y')}
-        LUGAR: San Martín de los Andes.
+        FECHA: {fecha_base.strftime('%d/%m/%Y')}
+        DATOS LOCALES (AIC/SMN): {datos_aic if aic_ok else 'No disp.'} | {datos_smn if smn_ok else 'No disp.'}
+        DATOS SATELITALES: {datos_om if om_ok else 'No disp.'}
 
-        FUENTES OFICIALES (PONDERACIÓN 40% - PRIORIDAD EN ALERTAS):
-        - AIC (PDF Local): {datos_aic if aic_ok else 'SIN DATOS'}
-        - SMN (Chapelco): {datos_smn if smn_ok else 'SIN DATOS'}
-
-        MODELO GLOBAL (PONDERACIÓN 60% - TENDENCIA):
-        - Open-Meteo: {datos_om if om_ok else 'SIN DATOS'}
-
-        INSTRUCCIONES PARA LA SÍNTESIS:
-        1. Generá el pronóstico para los próximos 6 días.
-        2. Usá la ponderación 40/60: los datos locales (AIC/SMN) definen los fenómenos (lluvia, tormenta, ráfagas), el modelo global ajusta la curva de temperatura.
-        3. Formato obligatorio por cada día (mantener hashtags):
-        [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones generales] con [cielo], y máxima esperada de [temperatura máxima] °C, mínima de [temperatura mínima] °C. Viento del [dirección] entre [vel_min] y [vel_max] km/h, [lluvias previstas].
+        TAREA: Generar síntesis de 6 días para San Martín de los Andes.
+        PONDERACIÓN: 40% Local, 60% Global.
+        FORMATO: [Día] [Día] de [Mes] – San Martín de los Andes: [condiciones] con [cielo], y máxima de [temp] °C, mínima de [temp] °C. Viento del [dir] entre [min] y [max] km/h, [lluvias].
         #[Lugar] #ClimaSMA #[Condición1] #[Condición2] #[Condición3]
-        ---
         """
 
-        # 4. Ejecución con Doble Motor
         sintesis, motor_ia = llamar_ia_con_fallback(prompt)
-        status.update(label="✅ Síntesis generada", state="complete")
+        status.update(label="✅ Reporte finalizado", state="complete")
 
-    # 5. RESULTADO FINAL (Pantalla principal)
+    # SALIDA VISUAL
     st.markdown(f'<div class="reporte-final">{sintesis}</div>', unsafe_allow_html=True)
 
-    # 6. TESTIGO DE VERDAD (Leyenda de fuentes al final)
+    # TESTIGO DE VERDAD
     st.markdown(f"""
     <div class="testigo-fuente">
-        <strong>Fuentes utilizadas en esta síntesis:</strong><br>
-        {'✅' if aic_ok else '❌'} <b>AIC:</b> {'Sincronizado' if aic_ok else 'No disponible'}<br>
-        {'✅' if smn_ok else '❌'} <b>SMN:</b> {'Sincronizado (Chapelco Aero)' if smn_ok else 'No disponible'}<br>
-        {'✅' if om_ok else '❌'} <b>Modelos:</b> Satelital GFS/ECMWF<br>
-        🧠 <b>IA:</b> {motor_ia}
+        <strong>Testigo de Verdad:</strong><br>
+        📡 AIC: {'✅ OK' if aic_ok else '❌ Falló'}<br>
+        📡 SMN: {'✅ OK' if smn_ok else '❌ Falló'}<br>
+        🌍 Modelos: Open-Meteo GFS/ECMWF<br>
+        🧠 Motor IA: <b>{motor_ia}</b>
     </div>
     """, unsafe_allow_html=True)
-
-# Información de pie de página
-st.markdown("---")
-st.caption(f"Sistema optimizado para Gemini 3 Flash | Versión 2026 | Última ejecución: {datetime.now().strftime('%H:%M:%S')}")
