@@ -827,14 +827,19 @@ urllib3>=2.0.0
 # 8. EJECUCIÓN
 # ============================================================================
 
-if __name__ == "__main__":
-    main()            if nombre in st.secrets:
+def cargar_configuracion():
+    secrets = {}
+    try:
+        # 1. Cargar clave de Gemini
+        for i in range(1, 4):
+            nombre = f"GEMINI_API_KEY_{i}" if i > 1 else "GEMINI_API_KEY"
+            if nombre in st.secrets:
                 secrets['GEMINI'] = st.secrets[nombre]
-                break
-        
-        # OpenRouter APIs (puedes tener varias)
+                break 
+
+        # 2. Cargar claves de OpenRouter
         openrouter_keys = []
-        for i in range(1, 4):  # Buscar OPENROUTER_API_KEY, OPENROUTER_API_KEY_2, etc.
+        for i in range(1, 4):
             nombre = f"OPENROUTER_API_KEY_{i}" if i > 1 else "OPENROUTER_API_KEY"
             if nombre in st.secrets:
                 key = st.secrets[nombre]
@@ -848,6 +853,10 @@ if __name__ == "__main__":
         secrets = {'GEMINI': '', 'OPENROUTER_KEYS': []}
     
     return secrets
+
+# Al final del archivo, para ejecutar la app:
+if __name__ == "__main__":
+    main()
 
 # Cargar secrets globalmente
 SECRETS = cargar_secrets()
