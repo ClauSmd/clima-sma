@@ -1,6 +1,9 @@
+# requirements.txt completo
 streamlit
 requests
 google-generativeai>=0.8.3
 pdfplumber
 httpx
 beautifulsoup4==4.12.0
+plotly>=5.18.0
+urllib3>=2.0.0  # <-- AÑADIR ESTO
