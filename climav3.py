@@ -3,24 +3,21 @@ import requests
 import pdfplumber
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# --- 1. CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Weather Aggregator SMA", layout="wide")
 
-# --- 2. DEFINICIÓN DE FUNCIONES (DEBEN IR ANTES DEL CUERPO PRINCIPAL) ---
-
 def get_aic_data():
-    """Extrae datos del PDF de la AIC"""
     url = "https://www.aic.gob.ar/sitio/extendido-pdf?a=1029&z=1750130550"
     try:
         response = requests.get(url, timeout=15)
-        response.raise_for_status()
         with pdfplumber.open(io.BytesIO(response.content)) as pdf:
             pagina = pdf.pages[0]
             tabla = pagina.extract_table({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
             
-            # Extraemos datos saltando la columna de etiquetas
+            # Ajuste de índices para evitar el desfase de días
+            fechas_fila = [f.replace("\n", "") for f in tabla[0] if f]
             cielos = [c.replace("\n", " ") for c in tabla[2][1:] if c]
             temps = [t.replace("\n", "").replace(" ºC", "").strip() for t in tabla[3][1:] if t]
             vientos = [v.replace("\n", "").replace(" km/h", "").strip() for v in tabla[4][1:] if v]
@@ -31,9 +28,13 @@ def get_aic_data():
             sintesis = texto.split("hPa")[-1].split("www.aic.gob.ar")[0].strip() if "hPa" in texto else ""
 
             dias_dict = []
+            # Iteramos de 2 en 2 para agrupar Día y Noche correctamente
             for i in range(0, min(10, len(cielos)), 2):
+                idx_fecha = i // 2
                 dias_dict.append({
-                    "cielo": cielos[i],
+                    "fecha": fechas_fila[idx_fecha] if idx_fecha < len(fechas_fila) else "S/D",
+                    "cielo_dia": cielos[i],
+                    "cielo_noche": cielos[i+1],
                     "temp_max": temps[i],
                     "temp_min": temps[i+1],
                     "viento": vientos[i],
@@ -45,11 +46,9 @@ def get_aic_data():
         return {"status": "ERROR", "error": str(e)}
 
 def get_open_meteo_data():
-    """Extrae datos de la API de Open-Meteo"""
     url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,windgusts_10m_max&timezone=America%2FArgentina%2FSalta&forecast_days=5"
     try:
         r = requests.get(url, timeout=15)
-        r.raise_for_status()
         d = r.json()["daily"]
         procesados = []
         for i in range(len(d["time"])):
@@ -65,34 +64,24 @@ def get_open_meteo_data():
         return {"status": "ERROR", "error": str(e)}
 
 def consultar_ia_con_fallback(prompt):
-    """Prueba múltiples modelos si uno falla"""
     api_key = st.secrets.get("OPENROUTER_API_KEY")
-    modelos = [
-        "google/gemini-2.0-flash-exp:free", 
-        "meta-llama/llama-3.1-8b-instruct:free",
-        "mistralai/mistral-7b-instruct:free"
-    ]
-    
+    modelos = ["google/gemini-2.0-flash-exp:free", "meta-llama/llama-3.1-8b-instruct:free"]
     for modelo in modelos:
         try:
             res = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
-                data=json.dumps({
-                    "model": modelo,
-                    "messages": [{"role": "user", "content": prompt}]
-                }),
+                data=json.dumps({"model": modelo, "messages": [{"role": "user", "content": prompt}]}),
                 timeout=20
             )
             data = res.json()
             if "choices" in data:
-                return data['choices'][0]['message']['content'], modelo
+                return data['choices'][0]['message']['content']
         except:
             continue
-    return None, None
+    return None
 
-# --- 3. INTERFAZ Y LÓGICA PRINCIPAL ---
-
+# --- INTERFAZ ---
 st.sidebar.title("Fuentes de Análisis")
 sel_aic = st.sidebar.checkbox("AIC (PDF)", value=True)
 sel_om = st.sidebar.checkbox("Open-Meteo", value=True)
@@ -100,39 +89,28 @@ sel_om = st.sidebar.checkbox("Open-Meteo", value=True)
 st.title("🌤️ Weather Aggregator SMA")
 
 if st.button("🚀 GENERAR PRONÓSTICO PONDERADO"):
-    data_final = {}
-    
-    # Obtención de datos
-    if sel_aic:
-        data_final["AIC"] = get_aic_data()
-    if sel_om:
-        data_final["OpenMeteo"] = get_open_meteo_data()
+    with st.spinner("Procesando..."):
+        data_aic = get_aic_data() if sel_aic else None
+        data_om = get_open_meteo_data() if sel_om else None
 
-    # Construcción del Prompt
-    prompt_ia = f"""
-    Eres un meteorólogo. Genera el pronóstico ponderado (50% OpenMeteo, 50% AIC) para San Martín de los Andes.
-    DATOS: {json.dumps(data_final)}
-    
-    FORMATO REQUERIDO:
-    1. Reporte de 5 días con el formato: [Día Semana] [Día] de [Mes] – San Martín de los Andes: [Condicion] con [Cielo], máxima [Max]°C, mínima [Min]°C. Viento [Dir] [Vel]-[Raf] km/h. #SanMartínDeLosAndes #ClimaSMA
-    2. Al final, añade una sección 'SÍNTESIS DIARIA' con un párrafo narrativo unificado.
-    """
-
-    with st.spinner("Ponderando datos con IA..."):
-        respuesta, modelo_usado = consultar_ia_con_fallback(prompt_ia)
+        # Prompt ultra-específico para forzar el formato de las capturas
+        prompt_ia = f"""
+        Actúa como el sistema de la AIC. Genera el pronóstico ponderado (50% OpenMeteo, 50% AIC).
+        DATOS AIC: {json.dumps(data_aic)}
+        DATOS OPENMETEO: {json.dumps(data_om)}
         
-        if respuesta:
-            st.subheader(f"📍 Resultado Unificado (Modelo: {modelo_usado.split('/')[-1]})")
-            st.info(respuesta)
-            st.text_area("Copiar reporte:", value=respuesta, height=300)
-        else:
-            st.error("No se pudo obtener respuesta de ninguna IA. Verifica tu API Key.")
+        ESTRUCTURA DE SALIDA OBLIGATORIA (Copia este estilo):
+        Para cada uno de los 5 días:
+        [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [Condición] con [Cielo], y máxima esperada de [Max] °C, mínima de [Min] °C. Viento del [Dir] entre [Vel] y [Raf] km/h, [Lluvias previstas/Sin lluvias]. #SanMartínDeLosAndes #ClimaSMA #[Condición]
 
-    # Desglose técnico (Abajo)
-    st.divider()
-    st.subheader("🔍 Desglose de Fuentes")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Datos AIC:**", data_final.get("AIC"))
-    with col2:
-        st.write("**Datos Open-Meteo:**", data_final.get("OpenMeteo"))
+        Al final, incluye una sección llamada 'SÍNTESIS' que sea un solo párrafo con el análisis general.
+        """
+
+        reporte = consultar_ia_con_fallback(prompt_ia)
+        
+        if reporte:
+            st.markdown("### 📍 Resultado Ponderado Unificado")
+            st.info(reporte) # El fondo azul imita tu captura
+            st.text_area("Copiar reporte para redes:", value=reporte, height=350)
+        else:
+            st.error("Error al generar la síntesis.")
