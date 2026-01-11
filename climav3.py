@@ -20,92 +20,149 @@ st.sidebar.title("Configuración")
 fecha_inicio = st.sidebar.date_input("📅 Fecha de inicio", datetime.now().date())
 usa_ia = st.sidebar.toggle("🤖 Activar Inteligencia Artificial", value=True)
 
-# --- 2. FUNCIONES DE EXTRACCIÓN (AIC y Open-Meteo) ---
-# [Se mantienen las funciones get_aic_data y get_open_meteo_data del historial]
+# --- 2. FUNCIONES DE EXTRACCIÓN ---
 
-# --- 3. LÓGICA DE UNIFICACIÓN Y FUSIÓN ---
+def get_aic_data():
+    """Extrae datos de la AIC y captura la síntesis"""
+    url = "https://www.aic.gob.ar/sitio/extendido-pdf?a=1029&z=1750130550"
+    try:
+        response = requests.get(url, timeout=15)
+        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
+            pagina = pdf.pages[0]
+            tabla = pagina.extract_table({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
+            fechas_raw = [f.replace("\n", "") for f in tabla[0] if f]
+            cielos = [c.replace("\n", " ") for c in tabla[2][1:] if c]
+            temps = [t.replace("\n", "").replace(" ºC", "").strip() for t in tabla[3][1:] if t]
+            v_vel = [v.replace("\n", "").replace(" km/h", "").strip() for v in tabla[4][1:] if v]
+            v_dir = [d.replace("\n", "") for d in tabla[6][1:] if d]
+            
+            texto_completo = pagina.extract_text()
+            sintesis = texto_completo.split("hPa")[-1].split("www.aic.gob.ar")[0].strip() if "hPa" in texto_completo else ""
+            
+            dias_dict = []
+            for i in range(len(cielos)):
+                f_obj = datetime.strptime(fechas_raw[i // 2], "%d-%m-%Y").date()
+                dias_dict.append({
+                    "fecha_obj": f_obj, "fecha_str": fechas_raw[i // 2],
+                    "cielo": cielos[i], "max": float(temps[i]), "viento": float(v_vel[i]), "dir": v_dir[i]
+                })
+            return {"status": "OK", "datos": dias_dict, "sintesis": sintesis}
+    except Exception as e: return {"status": "ERROR", "error": str(e)}
+
+def get_open_meteo_data():
+    """Extrae datos de Open-Meteo"""
+    url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,windgusts_10m_max,precipitation_probability_max&timezone=America%2FArgentina%2FSalta&forecast_days=10"
+    try:
+        r = requests.get(url, timeout=15).json()["daily"]
+        procesados = []
+        for i in range(len(r["time"])):
+            procesados.append({
+                "fecha_obj": datetime.strptime(r["time"][i], "%Y-%m-%d").date(),
+                "max": r["temperature_2m_max"][i], "min": r["temperature_2m_min"][i],
+                "viento": r["windspeed_10m_max"][i], "rafaga": r["windgusts_10m_max"][i],
+                "prob_lluvia": r["precipitation_probability_max"][i]
+            })
+        return {"status": "OK", "datos": procesados}
+    except Exception as e: return {"status": "ERROR", "error": str(e)}
+
+def consultar_ia_cascada(prompt):
+    """Cascada de modelos según prioridad de cuota"""
+    api_key = st.secrets.get("GOOGLE_API_KEY")
+    if not api_key: return None, "Falta API Key"
+    genai.configure(api_key=api_key)
+    modelos = ["gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemma-3-27b", "gemini-2.5-flash-native-audio-dialog"]
+    for mod in modelos:
+        try:
+            model = genai.GenerativeModel(mod)
+            response = model.generate_content(prompt)
+            if response.text: return response.text, mod
+        except: 
+            time.sleep(1)
+            continue
+    return None, "Error de cuota"
+
+# --- 3. LÓGICA DE PROCESAMIENTO ---
+
+st.title("🌤️ Weather Aggregator SMA")
+
 if st.button("🚀 GENERAR PRONÓSTICO 5 DÍAS"):
-    with st.spinner("Fusionando fuentes..."):
-        d_aic = get_aic_data() # Extrae del PDF
-        d_om = get_open_meteo_data() # Extrae de API
+    with st.spinner("Fusionando fuentes y redondeando..."):
+        d_aic = get_aic_data()
+        d_om = get_open_meteo_data()
 
     if d_aic["status"] == "OK" and d_om["status"] == "OK":
-        
-        # --- PASO 1: UNIFICAR AIC POR FECHA (Fusión Día/Noche) ---
+        # --- UNIFICACIÓN AIC (Fusionar duplicados de la misma fecha) ---
         aic_unificado = {}
         for d in d_aic["datos"]:
             f = d["fecha_obj"]
             if f not in aic_unificado:
-                aic_unificado[f] = d # Tomamos el primer registro (Día) como base
+                aic_unificado[f] = d
             else:
-                # Si es la misma fecha, solo actualizamos si el nuevo dato tiene temp más alta
                 if d["max"] > aic_unificado[f]["max"]:
                     aic_unificado[f]["max"] = d["max"]
 
-        # --- PASO 2: EMPAREJAR Y PROCESAR EXACTAMENTE 5 DÍAS ---
+        # --- PROCESAMIENTO 5 DÍAS SIN REPETICIÓN ---
         pronostico_final = []
-        fechas_procesadas = 0
+        fechas_unicas = 0
         
-        for i in range(10): # Buscamos en el margen de 10 días
-            fecha_actual = fecha_inicio + timedelta(days=i)
-            
-            if fecha_actual in aic_unificado and fechas_procesadas < 5:
-                # Datos de ambas fuentes para la misma fecha
-                data_aic = aic_unificado[fecha_actual]
-                # Buscamos la misma fecha en OpenMeteo
-                data_om = next((x for x in d_om["datos"] if x["fecha_obj"] == fecha_actual), None)
+        for i in range(12): # Buscamos en una ventana de 12 días
+            fecha_act = fecha_inicio + timedelta(days=i)
+            if fecha_act in aic_unificado and fechas_unicas < 5:
+                data_aic = aic_unificado[fecha_act]
+                data_om = next((x for x in d_om["datos"] if x["fecha_obj"] == fecha_act), None)
                 
                 if data_om:
                     # Redondeo lógico (enteros)
                     t_max = int(round((data_aic['max'] + data_om['max']) / 2))
-                    t_min = int(round(data_om['min'])) # OpenMeteo es más preciso en mínimas
+                    t_min = int(round(data_om['min']))
                     v_vel = int(round((data_aic['viento'] + data_om['viento']) / 2))
                     v_raf = int(round(data_om['rafaga']))
                     
                     icono = ICONOS_CIELO.get(data_aic['cielo'], "🌡️")
+                    meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+                    dias_sem = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+                    
+                    fecha_txt = f"{dias_sem[fecha_act.weekday()]} {fecha_act.day} de {meses[fecha_act.month-1]}"
                     
                     pronostico_final.append({
-                        "fecha": fecha_actual,
-                        "texto": f"{fecha_actual.strftime('%d/%m')}: {icono} {data_aic['cielo']}, {t_max}°/{t_min}°. Viento {v_vel}km/h (Ráf. {v_raf}km/h).",
-                        "detalles": f"**{fecha_actual.strftime('%A %d')}** – SMA: {data_aic['cielo']}, máx {t_max}°, mín {t_min}°. Viento {v_vel} km/h con ráfagas de {v_raf} km/h. #ClimaSMA"
+                        "header": f"{fecha_act.strftime('%d/%m')}",
+                        "icono": icono,
+                        "t_max": t_max,
+                        "resumen": f"**{fecha_txt} – SMA:** {icono} {data_aic['cielo']}, máxima {t_max}°, mínima {t_min}°. Viento {v_vel} km/h (Ráf. {v_raf} km/h). #ClimaSMA"
                     })
-                    fechas_procesadas += 1
+                    fechas_unicas += 1
 
-        # --- 4. VISUALIZACIÓN ---
-        st.subheader("🎯 Pronóstico Final Ponderado (5 Días)")
-        
-        reporte_completo = ""
+        # --- VISUALIZACIÓN ---
+        st.subheader("🎯 Pronóstico Final Ponderado")
         cols = st.columns(5)
+        reporte_texto = ""
         for idx, p in enumerate(pronostico_final):
             with cols[idx]:
-                st.metric(p["fecha"].strftime("%d/%m"), p["texto"].split(",")[1].split("/")[0].strip())
-                st.write(p["texto"].split(":")[1].split(",")[0])
-            reporte_completo += p["detalles"] + "\n"
+                st.metric(p["header"], f"{p['t_max']}°")
+                st.write(p["icono"])
+            reporte_texto += p["resumen"] + "\n\n"
 
-        st.markdown("---")
         if usa_ia:
-            prompt = f"Redacta profesionalmente estos 5 días: {reporte_completo}. Síntesis: {d_aic['sintesis']}"
-            res, mod = consultar_ia_cascada(prompt) #
+            prompt = f"Redacta profesionalmente: {reporte_texto}. Síntesis: {d_aic['sintesis']}"
+            res, mod = consultar_ia_cascada(prompt)
             if res:
                 st.success(f"Optimizado con {mod}")
                 st.info(res)
             else:
-                st.warning("Fallo IA. Reporte Manual:")
-                st.info(reporte_completo + f"\nSÍNTESIS: {d_aic['sintesis']}")
+                st.warning("IA saturada. Reporte manual:")
+                st.info(reporte_texto + f"**SÍNTESIS:**\n{d_aic['sintesis']}")
         else:
-            st.info(reporte_completo + f"\nSÍNTESIS: {d_aic['sintesis']}")
+            st.info(reporte_texto + f"**SÍNTESIS:**\n{d_aic['sintesis']}")
 
-        # --- 5. DATOS CRUDOS SIMPLIFICADOS (DESPLEGABLES) ---
+        # --- DATOS CRUDOS ---
         st.markdown("---")
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            with st.expander("📊 Datos Open-Meteo (Simplificado)"):
-                for o in d_om["datos"][:5]:
-                    st.write(f"📅 {o['fecha_obj']}: {o['max']}°C / {o['min']}°C | Ráfagas: {o['rafaga']}km/h")
-        with col_c2:
-            with st.expander("📄 Datos AIC (Unificados)"):
-                for f, a in aic_unificado.items():
-                    st.write(f"📅 {f}: {a['cielo']} | Máxima: {a['max']}°C")
+        with st.expander("📊 Ver Datos Crudos (AIC Unificada y Open-Meteo)"):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**AIC (Unificado):**")
+                for f, a in aic_unificado.items(): st.write(f"{f}: {a['cielo']} | {int(round(a['max']))}°C")
+            with c2:
+                st.write("**Open-Meteo:**")
+                for o in d_om["datos"][:5]: st.write(f"{o['fecha_obj']}: {int(round(o['max']))}°C / {int(round(o['min']))}°C")
 
-    else:
-        st.error("Error al obtener datos.")
+    else: st.error("Error al obtener datos.")
