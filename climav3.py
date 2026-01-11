@@ -2,12 +2,11 @@ import streamlit as st
 import requests
 import pdfplumber
 import io
-import json
 import google.generativeai as genai
 from datetime import datetime, timedelta
 import time
 
-# --- 1. CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN E INTERFAZ ---
 st.set_page_config(page_title="Weather Aggregator SMA", layout="wide")
 
 ICONOS_CIELO = {
@@ -43,8 +42,8 @@ def get_aic_data():
             for i in range(len(cielos)):
                 f_obj = datetime.strptime(fechas_raw[i // 2], "%d-%m-%Y").date()
                 dias_dict.append({
-                    "fecha_obj": f_obj, "fecha_str": fechas_raw[i // 2],
-                    "cielo": cielos[i], "max": float(temps[i]), "viento": float(v_vel[i]), "dir": v_dir[i]
+                    "fecha_obj": f_obj, "cielo": cielos[i], 
+                    "max": float(temps[i]), "viento": float(v_vel[i]), "dir": v_dir[i]
                 })
             return {"status": "OK", "datos": dias_dict, "sintesis": sintesis}
     except Exception as e: return {"status": "ERROR", "error": str(e)}
@@ -91,48 +90,55 @@ if st.button("🚀 GENERAR PRONÓSTICO 5 DÍAS"):
         d_om = get_open_meteo_data()
 
     if d_aic["status"] == "OK" and d_om["status"] == "OK":
-        # --- UNIFICACIÓN AIC (Fusionar duplicados de la misma fecha) ---
+        # --- UNIFICACIÓN AIC (Fusionar Día/Noche y Capturar Mínimas) ---
         aic_unificado = {}
         for d in d_aic["datos"]:
             f = d["fecha_obj"]
             if f not in aic_unificado:
-                aic_unificado[f] = d
+                aic_unificado[f] = {"cielo": d["cielo"], "max": d["max"], "min": d["max"], "viento": d["viento"], "dir": d["dir"]}
             else:
-                if d["max"] > aic_unificado[f]["max"]:
-                    aic_unificado[f]["max"] = d["max"]
+                # El segundo registro suele ser la noche, actualizamos mínima
+                if d["max"] < aic_unificado[f]["min"]: aic_unificado[f]["min"] = d["max"]
+                if d["max"] > aic_unificado[f]["max"]: aic_unificado[f]["max"] = d["max"]
 
-        # --- PROCESAMIENTO 5 DÍAS SIN REPETICIÓN ---
+        # --- PROCESAMIENTO 5 DÍAS (FUSIÓN TRANSPARENTE) ---
         pronostico_final = []
-        fechas_unicas = 0
-        
-        for i in range(12): # Buscamos en una ventana de 12 días
+        for i in range(5):
             fecha_act = fecha_inicio + timedelta(days=i)
-            if fecha_act in aic_unificado and fechas_unicas < 5:
-                data_aic = aic_unificado[fecha_act]
-                data_om = next((x for x in d_om["datos"] if x["fecha_obj"] == fecha_act), None)
-                
-                if data_om:
-                    # Redondeo lógico (enteros)
-                    t_max = int(round((data_aic['max'] + data_om['max']) / 2))
-                    t_min = int(round(data_om['min']))
-                    v_vel = int(round((data_aic['viento'] + data_om['viento']) / 2))
-                    v_raf = int(round(data_om['rafaga']))
-                    
-                    icono = ICONOS_CIELO.get(data_aic['cielo'], "🌡️")
-                    meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-                    dias_sem = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-                    
-                    fecha_txt = f"{dias_sem[fecha_act.weekday()]} {fecha_act.day} de {meses[fecha_act.month-1]}"
-                    
-                    pronostico_final.append({
-                        "header": f"{fecha_act.strftime('%d/%m')}",
-                        "icono": icono,
-                        "t_max": t_max,
-                        "resumen": f"**{fecha_txt} – SMA:** {icono} {data_aic['cielo']}, máxima {t_max}°, mínima {t_min}°. Viento {v_vel} km/h (Ráf. {v_raf} km/h). #ClimaSMA"
-                    })
-                    fechas_unicas += 1
+            data_om = next((x for x in d_om["datos"] if x["fecha_obj"] == fecha_act), None)
+            data_aic = aic_unificado.get(fecha_act)
 
-        # --- VISUALIZACIÓN ---
+            if data_om:
+                if data_aic:
+                    # Caso 1: Fusión Ponderada
+                    t_max = int(round((data_aic['max'] + data_om['max']) / 2))
+                    t_min = int(round((data_aic['min'] + data_om['min']) / 2))
+                    v_vel = int(round((data_aic['viento'] + data_om['viento']) / 2))
+                    cielo = data_aic['cielo']
+                    dir_v = data_aic['dir']
+                else:
+                    # Caso 2: Transparente con Open-Meteo (Fallback)
+                    t_max = int(round(data_om['max']))
+                    t_min = int(round(data_om['min']))
+                    v_vel = int(round(data_om['viento']))
+                    cielo = "Parcialmente Nublado" # Valor por defecto si falta AIC
+                    dir_v = "O"
+                
+                v_raf = int(round(data_om['rafaga']))
+                icono = ICONOS_CIELO.get(cielo, "🌡️")
+                
+                meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+                dias_sem = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+                fecha_txt = f"{dias_sem[fecha_act.weekday()]} {fecha_act.day} de {meses[fecha_act.month-1]}"
+
+                pronostico_final.append({
+                    "header": f"{fecha_act.strftime('%d/%m')}",
+                    "icono": icono,
+                    "t_max": t_max,
+                    "resumen": f"**{fecha_txt} – SMA:** {icono} {cielo}, máxima {t_max}°, mínima {t_min}°. Viento {dir_v} a {v_vel} km/h (Ráf. {v_raf} km/h). #ClimaSMA"
+                })
+
+        # --- 4. VISUALIZACIÓN ---
         st.subheader("🎯 Pronóstico Final Ponderado")
         cols = st.columns(5)
         reporte_texto = ""
@@ -154,15 +160,17 @@ if st.button("🚀 GENERAR PRONÓSTICO 5 DÍAS"):
         else:
             st.info(reporte_texto + f"**SÍNTESIS:**\n{d_aic['sintesis']}")
 
-        # --- DATOS CRUDOS ---
+        # --- 5. DATOS CRUDOS SIMPLIFICADOS ---
         st.markdown("---")
         with st.expander("📊 Ver Datos Crudos (AIC Unificada y Open-Meteo)"):
             c1, c2 = st.columns(2)
             with c1:
-                st.write("**AIC (Unificado):**")
-                for f, a in aic_unificado.items(): st.write(f"{f}: {a['cielo']} | {int(round(a['max']))}°C")
+                st.write("**AIC (Fusión Día/Noche):**")
+                for f, a in aic_unificado.items():
+                    st.write(f"📅 {f}: {a['cielo']} | Máx: {int(round(a['max']))}° / Mín: {int(round(a['min']))}°")
             with c2:
                 st.write("**Open-Meteo:**")
-                for o in d_om["datos"][:5]: st.write(f"{o['fecha_obj']}: {int(round(o['max']))}°C / {int(round(o['min']))}°C")
+                for o in d_om["datos"][:5]:
+                    st.write(f"📅 {o['fecha_obj']}: {int(round(o['max']))}° / {int(round(o['min']))}°")
 
     else: st.error("Error al obtener datos.")
