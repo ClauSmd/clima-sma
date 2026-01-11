@@ -4,26 +4,76 @@ import pdfplumber
 import io
 import json
 
-# --- 1. CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Weather Aggregator SMA", layout="wide")
 
-# [Funciones get_aic_data y get_open_meteo_data se mantienen igual para extraer los datos]
-# Estas funciones aseguran que se analicen ambas fuentes como en tus capturas
+# --- 2. DEFINICIÓN DE FUNCIONES (ORDEN CORRECTO) ---
 
-def consultar_ia_extrema(prompt):
+def get_aic_data():
+    """Extrae datos del PDF de la AIC y captura la síntesis original"""
+    url = "https://www.aic.gob.ar/sitio/extendido-pdf?a=1029&z=1750130550"
+    try:
+        response = requests.get(url, timeout=15)
+        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
+            pagina = pdf.pages[0]
+            tabla = pagina.extract_table({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
+            
+            # Sincronización de datos según la tabla de la AIC
+            fechas_fila = [f.replace("\n", "") for f in tabla[0] if f]
+            cielos = [c.replace("\n", " ") for c in tabla[2][1:] if c]
+            temps = [t.replace("\n", "").replace(" ºC", "").strip() for t in tabla[3][1:] if t]
+            v_vel = [v.replace("\n", "").replace(" km/h", "").strip() for v in tabla[4][1:] if v]
+            v_raf = [r.replace("\n", "").replace(" km/h", "").strip() for r in tabla[5][1:] if r]
+            v_dir = [d.replace("\n", "") for d in tabla[6][1:] if d]
+            
+            texto = pagina.extract_text()
+            sintesis = texto.split("hPa")[-1].split("www.aic.gob.ar")[0].strip() if "hPa" in texto else ""
+
+            dias_dict = []
+            for i in range(0, min(10, len(cielos)), 2):
+                idx = i // 2
+                dias_dict.append({
+                    "fecha": fechas_fila[idx] if idx < len(fechas_fila) else "S/D",
+                    "cielo": cielos[i], 
+                    "max": temps[i], 
+                    "min": temps[i+1],
+                    "viento": v_vel[i], 
+                    "rafaga": v_raf[i], 
+                    "dir": v_dir[i]
+                })
+            return {"status": "OK", "datos": dias_dict, "sintesis": sintesis}
+    except Exception as e:
+        return {"status": "ERROR", "error": str(e)}
+
+def get_open_meteo_data():
+    """Extrae datos de la API de Open-Meteo"""
+    url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,windgusts_10m_max&timezone=America%2FArgentina%2FSalta&forecast_days=5"
+    try:
+        r = requests.get(url, timeout=15)
+        d = r.json()["daily"]
+        procesados = []
+        for i in range(len(d["time"])):
+            procesados.append({
+                "fecha": d["time"][i], 
+                "max": d["temperature_2m_max"][i],
+                "min": d["temperature_2m_min"][i], 
+                "viento": d["windspeed_10m_max"][i],
+                "rafaga": d["windgusts_10m_max"][i]
+            })
+        return {"status": "OK", "datos": procesados}
+    except Exception as e:
+        return {"status": "ERROR", "error": str(e)}
+
+def consultar_ia_con_reintentos(prompt):
+    """Prueba múltiples modelos de OpenRouter si uno falla"""
     api_key = st.secrets.get("OPENROUTER_API_KEY")
-    # LISTA DE MODELOS: Si falla uno, pasa al siguiente automáticamente
-    modelos_a_probar = [
-        "google/gemini-2.0-flash-exp:free", 
-        "meta-llama/llama-3.1-8b-instruct:free", 
-        "mistralai/mistral-7b-instruct:free",
-        "google/gemini-flash-1.5-8b" # Modelo muy estable de bajo costo/gratis
+    modelos = [
+        "google/gemini-2.0-flash-exp:free",
+        "meta-llama/llama-3.1-8b-instruct:free",
+        "mistralai/mistral-7b-instruct:free"
     ]
-    
-    for modelo in modelos_a_probar:
+    for modelo in modelos:
         try:
-            # Mensaje de progreso para que veas qué modelo está intentando
-            st.write(f"🔄 Intentando síntesis con: {modelo.split('/')[-1]}...")
             res = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -38,45 +88,55 @@ def consultar_ia_extrema(prompt):
             if "choices" in data:
                 return data['choices'][0]['message']['content'], modelo
         except:
-            continue # Si falla, el bucle 'for' pasa al siguiente modelo
+            continue
     return None, None
 
-# --- 2. INTERFAZ ---
+# --- 3. INTERFAZ Y LÓGICA DE EJECUCIÓN ---
+
 st.sidebar.title("Fuentes de Datos")
-sel_aic = st.sidebar.checkbox("AIC (PDF)", value=True)
-sel_om = st.sidebar.checkbox("Open-Meteo", value=True)
+sel_aic = st.sidebar.checkbox("Analizar AIC (PDF)", value=True)
+sel_om = st.sidebar.checkbox("Analizar Open-Meteo", value=True)
 
-st.title("🌤️ Pronóstico Ponderado SMA")
+st.title("🌤️ Weather Aggregator SMA - Ponderado")
 
-if st.button("🚀 GENERAR REPORTE"):
+if st.button("🚀 GENERAR PRONÓSTICO UNIFICADO"):
     with st.spinner("Ponderando datos (50% AIC / 50% Open-Meteo)..."):
-        # Se extraen los datos de ambas fuentes para el análisis ponderado
+        # Ahora las funciones ya están definidas arriba, NO darán NameError
         d_aic = get_aic_data() if sel_aic else None
         d_om = get_open_meteo_data() if sel_om else None
 
-        # Reducimos los datos para no saturar a la IA
-        datos_payload = {
+        # Preparar datos para la IA
+        payload = {
             "AIC": d_aic["datos"] if d_aic else "No disponible",
             "OM": d_om["datos"] if d_om else "No disponible",
-            "Sintesis_AIC": d_aic["sintesis"] if d_aic else ""
+            "Sintesis_Original_AIC": d_aic["sintesis"] if d_aic else ""
         }
 
-        # Prompt con el formato idéntico a tus capturas
+        # Prompt forzando el formato de tus capturas
         prompt = f"""
-        Actúa como meteorólogo. Genera el pronóstico ponderado al 50/50 basado en: {json.dumps(datos_payload)}
+        Actúa como meteorólogo. Genera el pronóstico ponderado al 50/50.
+        DATOS: {json.dumps(payload)}
         
-        FORMATO OBLIGATORIO:
+        FORMATO OBLIGATORIO (COPIA ESTE ESTILO):
         [Día Semana] [Día] de [Mes] – San Martín de los Andes: [Condición] con [Cielo], máxima [Max] °C, mínima [Min] °C. Viento del [Dir] entre [Vel] y [Raf] km/h, [Lluvias]. #SanMartínDeLosAndes #ClimaSMA
         
         SÍNTESIS DIARIA:
-        [Un párrafo narrativo analizando la tendencia]
+        [Un párrafo narrativo analizando la tendencia general]
         """
 
-        reporte, modelo_exitoso = consultar_ia_extrema(prompt)
+        reporte, modelo_usado = consultar_ia_con_reintentos(prompt)
         
         if reporte:
-            st.success(f"✅ Reporte generado con éxito usando {modelo_exitoso}")
-            st.info(reporte) # Contenedor azulado como en tus capturas
-            st.text_area("Copiar para publicar:", value=reporte, height=350)
+            st.success(f"Modelo utilizado: {modelo_usado.split('/')[-1]}")
+            st.info(reporte) # Contenedor azul como en tus capturas
+            st.text_area("Copia el reporte aquí:", value=reporte, height=350)
         else:
-            st.error("❌ Todos los modelos de IA fallaron. Verifica tu API Key en los Secrets de Streamlit.")
+            st.error("Error: Todas las IAs fallaron. Revisa tu clave API en Streamlit Secrets.")
+
+    # Mostrar desglose para control del usuario
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Datos AIC Analizados:**", d_aic)
+    with col2:
+        st.write("**Datos Open-Meteo Analizados:**", d_om)
