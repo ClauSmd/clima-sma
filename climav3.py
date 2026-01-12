@@ -1,182 +1,270 @@
 import streamlit as st
-import requests
-import pdfplumber
-import io
-import google.generativeai as genai
-from datetime import datetime, timedelta
-import time
-
-# --- 1. CONFIGURACIÓN E INTERFAZ ---
-st.set_page_config(page_title="Weather Aggregator SMA", layout="wide")
-
-# Mapeo de iconos basado en AIC
-ICONOS_CIELO = {
-    "Despejado": "☀️", "Mayormente Despejado": "🌤️", "Parcialmente Nublado": "⛅",
-    "Nublado": "☁️", "Cubierto": "🌥️", "Inestable": "🌦️", 
-    "Mayormente Cubierto": "🌥️", "Lluvias Débiles y Dispersas": "🌧️", 
-    "Lluvia": "🌧️", "Nieve": "❄️", "N/D": "🌡️"
-}
-
-st.sidebar.title("Configuración")
-fecha_inicio = st.sidebar.date_input("📅 Fecha de inicio", datetime.now().date())
-usa_ia = st.sidebar.toggle("🤖 Activar Inteligencia Artificial", value=True)
-
-# --- 2. FUNCIONES DE EXTRACCIÓN Y PROCESAMIENTO ---
-
-def get_aic_data():
-    """Extrae datos de la AIC y captura la síntesis"""
-    url = "https://www.aic.gob.ar/sitio/extendido-pdf?a=1029&z=1750130550"
-    try:
-        response = requests.get(url, timeout=15)
-        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
-            pagina = pdf.pages[0]
-            tabla = pagina.extract_table({"vertical_strategy": "lines", "horizontal_strategy": "lines"})
-            fechas_raw = [f.replace("\n", "") for f in tabla[0] if f]
-            cielos = [c.replace("\n", " ") for c in tabla[2][1:] if c]
-            temps = [t.replace("\n", "").replace(" ºC", "").strip() for t in tabla[3][1:] if t]
-            v_vel = [v.replace("\n", "").replace(" km/h", "").strip() for v in tabla[4][1:] if v]
-            v_dir = [d.replace("\n", "") for d in tabla[6][1:] if d]
-            
-            texto_completo = pagina.extract_text()
-            sintesis = texto_completo.split("hPa")[-1].split("www.aic.gob.ar")[0].strip() if "hPa" in texto_completo else ""
-            
-            dias_dict = []
-            for i in range(len(cielos)):
-                f_obj = datetime.strptime(fechas_raw[i // 2], "%d-%m-%Y").date()
-                dias_dict.append({
-                    "fecha_obj": f_obj, "cielo": cielos[i], 
-                    "max": float(temps[i]), "viento": float(v_vel[i]), "dir": v_dir[i]
-                })
-            return {"status": "OK", "datos": dias_dict, "sintesis": sintesis}
-    except Exception as e: return {"status": "ERROR", "error": str(e)}
-
-def get_open_meteo_data():
-    """Extrae datos de Open-Meteo para ponderación y ráfagas"""
-    url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,windgusts_10m_max,precipitation_probability_max&timezone=America%2FArgentina%2FSalta&forecast_days=10"
-    try:
-        r = requests.get(url, timeout=15).json()["daily"]
-        procesados = []
-        for i in range(len(r["time"])):
-            procesados.append({
-                "fecha_obj": datetime.strptime(r["time"][i], "%Y-%m-%d").date(),
-                "max": r["temperature_2m_max"][i], "min": r["temperature_2m_min"][i],
-                "viento": r["windspeed_10m_max"][i], "rafaga": r["windgusts_10m_max"][i]
-            })
-        return {"status": "OK", "datos": procesados}
-    except Exception as e: return {"status": "ERROR", "error": str(e)}
-
-def consultar_ia_cascada(prompt):
-    """Maneja límites de 5 RPM rotando modelos"""
-    api_key = st.secrets.get("GOOGLE_API_KEY")
-    if not api_key: return None, "Falta API Key"
-    genai.configure(api_key=api_key)
-    modelos = ["gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemma-3-27b", "gemini-2.5-flash-native-audio-dialog"]
-    for mod in modelos:
-        try:
-            model = genai.GenerativeModel(mod)
-            response = model.generate_content(prompt)
-            if response.text: return response.text, mod
-        except: 
-            time.sleep(1.2) # Pausa técnica para reset de cuota
-            continue
-    return None, "Cuota agotada"
-
-# --- 3. LÓGICA PRINCIPAL ---
-
-st.title("🌤️ Weather Aggregator SMA")
-
-if st.button("🚀 GENERAR PRONÓSTICO 5 DÍAS"):
-    with st.spinner("Fusionando fuentes estilo AIC..."):
-        d_aic = get_aic_data()
-        d_om = get_open_meteo_data()
-
-    if d_aic["status"] == "OK" and d_om["status"] == "OK":
-        # --- UNIFICACIÓN AIC (Fusión Día/Noche para Máximas y Mínimas) ---
-        aic_unificado = {}
-        for d in d_aic["datos"]:
-            f = d["fecha_obj"]
-            if f not in aic_unificado:
-                aic_unificado[f] = {"cielo": d["cielo"], "max": d["max"], "min": d["max"], "viento": d["viento"], "dir": d["dir"]}
-            else:
-                if d["max"] < aic_unificado[f]["min"]: aic_unificado[f]["min"] = d["max"]
-                if d["max"] > aic_unificado[f]["max"]: aic_unificado[f]["max"] = d["max"]
-
-        # --- CONSTRUCCIÓN DE 5 DÍAS (FUSIÓN TRANSPARENTE) ---
-        pronostico_final = []
-        for i in range(5):
-            fecha_act = fecha_inicio + timedelta(days=i)
-            data_om = next((x for x in d_om["datos"] if x["fecha_obj"] == fecha_act), None)
-            data_aic = aic_unificado.get(fecha_act)
-
-            if data_om:
-                if data_aic:
-                    t_max = int(round((data_aic['max'] + data_om['max']) / 2))
-                    t_min = int(round((data_aic['min'] + data_om['min']) / 2))
-                    v_vel = int(round((data_aic['viento'] + data_om['viento']) / 2))
-                    cielo_desc = data_aic['cielo']
-                    dir_v = data_aic['dir']
-                else:
-                    t_max = int(round(data_om['max']))
-                    t_min = int(round(data_om['min']))
-                    v_vel = int(round(data_om['viento']))
-                    cielo_desc = "N/D"
-                    dir_v = "O"
-                
-                v_raf = int(round(data_om['rafaga']))
-                icono = ICONOS_CIELO.get(cielo_desc, "🌡️")
-                
-                # Formateo de fecha para el resumen
-                meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-                dias_sem = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-                fecha_txt = f"{dias_sem[fecha_act.weekday()]} {fecha_act.day} de {meses[fecha_act.month-1]}"
-
-                pronostico_final.append({
-                    "header": f"{dias_sem[fecha_act.weekday()][:3].lower()} {fecha_act.day}",
-                    "icono": icono, "cielo_desc": cielo_desc,
-                    "t_max": t_max, "t_min": t_min, "v_vel": v_vel, "v_raf": v_raf, "dir_v": dir_v,
-                    "resumen": f"{fecha_txt} – SMA: {icono} {cielo_desc}, máxima {t_max}°, mínima {t_min}°. Viento {dir_v} a {v_vel} km/h (Ráf. {v_raf} km/h). #ClimaSMA"
-                })
-
-        # --- 4. DISEÑO VISUAL AIC ---
-        st.subheader("🎯 Pronóstico Final Ponderado")
-        cols = st.columns(5)
-        reporte_texto = ""
+import pandas as pd
+import datetime
+from fusion_engine import FusionEngine
+from ai_reporter import MeteorologistBot
+import os
+import textwrap
+# Page Config
+st.set_page_config(page_title="Pronóstico SMA - Fusión", page_icon="🌦️", layout="wide")
+# Custom CSS for AIC Style
+st.markdown("""
+<style>
+    .main {
+        background-color: #f0f2f6;
+    }
+    .forecast-card {
+        background-color: white;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        padding: 10px;
+        text-align: center;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+        height: 100%;
+    }
+    .date-header {
+        font-weight: bold;
+        font-size: 1.1em;
+        background-color: #005a87;
+        color: white;
+        padding: 5px;
+        border-radius: 3px 3px 0 0;
+        margin-bottom: 10px;
+        text-transform: capitalize;
+    }
+    .param-row {
+        margin: 5px 0;
+        font-size: 0.9em;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 3px;
+    }
+    .param-label {
+        font-weight: bold;
+        color: #555;
+        font-size: 0.8em;
+        display: block;
+    }
+    .temp-high { color: #d32f2f; font-weight: bold; }
+    .temp-low { color: #1976d2; font-weight: bold; }
+    .ai-report-box {
+        background-color: #e3f2fd;
+        border-left: 5px solid #2196f3;
+        padding: 15px;
+        margin-top: 20px;
+        border-radius: 5px;
+    }
+</style>
+""", unsafe_allow_html=True)
+# Title
+st.title("🌦️ Weather Aggregator SMA")
+st.markdown("**Fusión de Fuentes:** SMN (Nacional) + AIC (Cuenca) + Open-Meteo (Ráfagas)")
+# Sidebar for API Key
+with st.sidebar:
+    st.header("Configuración")
+    api_key_input = st.text_input("Gemini API Key", type="password", value=os.environ.get("GOOGLE_API_KEY", ""))
+    if api_key_input:
+        os.environ["GOOGLE_API_KEY"] = api_key_input
+# Main Logic
+try:
+    with st.spinner("Fusionando datos de SMN, AIC y Open-Meteo..."):
+        engine = FusionEngine()
+        forecast_data = engine.get_5_day_forecast()
+    # Layout: Premium Card Grid
+    st.markdown("""
+    <style>
+        .weather-card {
+            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            border: 1px solid #e1e4e8;
+            overflow: hidden;
+            transition: transform 0.2s;
+            margin-bottom: 20px;
+        }
+        .weather-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.12);
+        }
+        .card-header {
+            background-color: #007bff; /* SMN Blue */
+            color: white;
+            padding: 10px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.1em;
+            letter-spacing: 0.5px;
+        }
+        .card-body {
+            padding: 15px;
+            text-align: center;
+            color: #333;
+        }
+        .weather-icon {
+            font-size: 3.5em; /* Large Icon */
+            margin: 10px 0;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        }
+        .sky-text {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 15px;
+            text-transform: capitalize;
+            height: 40px; /* Fixed height for alignment */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1.2;
+        }
+        .temp-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+            background: rgba(0,0,0,0.03);
+            padding: 8px;
+            border-radius: 8px;
+        }
+        .temp-box {
+            display: flex;
+            flex-direction: column;
+        }
+        .temp-val-max { font-size: 1.8em; font-weight: 700; color: #e53935; line-height: 1; }
+        .temp-val-min { font-size: 1.4em; font-weight: 600; color: #1e88e5; line-height: 1; }
+        .temp-label { font-size: 0.7em; color: #888; text-transform: uppercase; margin-top: 4px; }
         
-        for idx, p in enumerate(pronostico_final):
-            with cols[idx]:
-                st.markdown(f"### {p['header']}")
-                st.markdown(f"**Cielo**\n\n# {p['icono']}")
-                st.markdown(f"**Estado**\n{p['cielo_desc']}")
-                st.markdown(f"**Temperatura**\n{p['t_max']}°C / {p['t_min']}°C")
-                st.markdown(f"**Viento**\n{p['v_vel']} km/h")
-                st.markdown(f"**Ráfagas**\n{p['v_raf']} km/h")
-                st.markdown(f"**Dirección**\n{p['dir_v']}")
-                st.markdown("**Presión**\n1012 hPa")
-            reporte_texto += p["resumen"] + "\n\n"
-
-        # --- 5. SALIDA DE TEXTO / IA ---
-        st.markdown("---")
-        if usa_ia:
-            prompt = f"Redacta el pronóstico para SMA basado en esto: {reporte_texto}. Síntesis: {d_aic['sintesis']}"
-            res, mod = consultar_ia_cascada(prompt)
-            if res:
-                st.success(f"Optimizado con {mod}")
-                st.info(res)
-            else:
-                st.info(reporte_texto + f"**SÍNTESIS:**\n{d_aic['sintesis']}")
-        else:
-            st.info(reporte_texto + f"**SÍNTESIS:**\n{d_aic['sintesis']}")
-
-        # --- 6. DATOS CRUDOS SIMPLIFICADOS ---
-        with st.expander("📊 Ver Datos Crudos"):
-            c1, c2 = st.columns(2)
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            font-size: 0.85em;
+            margin-top: 10px;
+            border-top: 1px solid #eee;
+            padding-top: 10px;
+        }
+        .stat-box {
+            background-color: #f8f9fa;
+            padding: 5px;
+            border-radius: 6px;
+        }
+        .stat-value { font-weight: 600; color: #333; }
+        .stat-label { font-size: 0.8em; color: #777; }
+        .source-tag {
+            margin-top: 10px;
+            font-size: 0.7em;
+            color: #aaa;
+            text-align: right;
+            font-style: italic;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    cols = st.columns(5)
+    for i, col in enumerate(cols):
+        day = forecast_data[i]
+        
+        # Icon Logic
+        desc = day['sky_desc'].lower()
+        icon = "coudy" # fallback
+        emoji = "☁️"
+        
+        if "despejado" in desc or "soleado" in desc: emoji = "☀️"
+        elif "parcialmente" in desc: emoji = "⛅"
+        elif "lluvia" in desc or "llovizna" in desc: emoji = "🌧️"
+        elif "nieve" in desc: emoji = "❄️"
+        elif "tormenta" in desc: emoji = "⛈️"
+        elif "niebla" in desc: emoji = "🌫️"
+        elif "nublado" in desc or "cubierto" in desc: emoji = "☁️"
+        
+        
+        src_clean = "Fusión"
+        if "AIC" in day['source']: src_clean = "AIC + Fusión"
+        
+        html_card = f"""
+<div class="weather-card">
+<div class="card-header">{day['date_str']}</div>
+<div class="card-body">
+<div class="sky-text">{day['sky_desc']}</div>
+<div class="weather-icon">{emoji}</div>
+<div class="temp-container">
+<div class="temp-box">
+<span class="temp-val-max">{day['max_temp']}°</span>
+<span class="temp-label">Máx</span>
+</div>
+<div style="width:1px; height:30px; background:#ddd;"></div>
+<div class="temp-box">
+<span class="temp-val-min">{day['min_temp']}°</span>
+<span class="temp-label">Mín</span>
+</div>
+</div>
+<div class="stat-grid">
+<div class="stat-box">
+<div class="stat-label">Viento</div>
+<div class="stat-value">{day['wind_speed']} km/h</div>
+<div style="font-size:0.7em; color:#888">{day['wind_dir']}</div>
+</div>
+<div class="stat-box">
+<div class="stat-label">Ráfagas</div>
+<div class="stat-value">{day['gusts']} km/h</div>
+</div>
+</div>
+<div class="source-tag">Fuente: {src_clean}</div>
+</div>
+</div>
+"""
+        
+        with col:
+            st.markdown(html_card, unsafe_allow_html=True)
+    st.markdown("---")
+    st.subheader("🤖 Meteorólogo Virtual (IA)")
+    
+    # Selection for AI Report
+    selected_day_idx = st.selectbox("Elegir día para generar reporte:", range(5), format_func=lambda x: forecast_data[x]['date_str'])
+    
+    if st.button("Generar Reporte (IA / Automático)"):
+        # We allow running without key now (falls back to template)
+        if os.environ.get("GOOGLE_API_KEY"):
+             os.environ["GOOGLE_API_KEY"] = os.environ["GOOGLE_API_KEY"].strip()
+        
+        bot = MeteorologistBot()
+        day_data = forecast_data[selected_day_idx]
+        with st.spinner(f"Generando reporte para el {day_data['date_str']}..."):
+            report = bot.generate_report(day_data)
+            
+            st.markdown(f"""
+            <div class="ai-report-box">
+                <h4>🎙️ Reporte del Día</h4>
+                <p style="font-family: monospace; font-size: 1.1em;">{report}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+    st.markdown("---")
+    with st.expander("🔎 Desglose de Datos por Fuente (Auditoría)", expanded=True):
+        st.info("Aquí se muestran los datos crudos extraídos antes de la ponderación.")
+        for day in forecast_data:
+            st.markdown(f"**{day['date_str']}**")
+            d = day['debug']
+            
+            # Updated to show all 5 sources
+            c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
-                st.write("**AIC (Fusión):**")
-                for f, a in aic_unificado.items():
-                    st.write(f"📅 {f}: {int(round(a['max']))}° / {int(round(a['min']))}°")
+                st.caption("🟠 Open-Meteo (50%)")
+                if d['om']: st.json(d['om'])
+                else: st.warning("-")
             with c2:
-                st.write("**Open-Meteo:**")
-                for o in d_om["datos"][:5]:
-                    st.write(f"📅 {o['fecha_obj']}: {int(round(o['max']))}° / {int(round(o['min']))}°")
-
-    else: st.error("Error al obtener datos.")
+                st.caption("🔵 AIC (PDF)")
+                if d['aic']: st.json(d['aic'])
+                else: st.warning("-")
+            with c3:
+                st.caption("⚪ SMN")
+                st.text(d['smn'])
+            with c4:
+                st.caption("🌤️ Met.no / AW")
+                if d['aw']: st.json(d['aw']) # Showing Met.no data here as per fusion logic
+                else: st.warning("-")
+            with c5:
+                st.caption("🪁 Windguru")
+                st.text(d['wg'])
+            st.markdown("---")
+except Exception as e:
+    st.error(f"Ocurrió un error crítico: {e}")
+    st.exception(e)
