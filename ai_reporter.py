@@ -40,7 +40,7 @@ class MeteorologistBot:
         # Build the string
         # {daily_data['date_str']} – SMA: [condiciones] con [cielo detallado], máxima {daily_data['max_temp']}°C, mínima {daily_data['min_temp']}°C. Viento del {daily_data['wind_dir']} orden de {daily_data['wind_speed']} km/h (Ráfagas {daily_data['gusts']} km/h). #ClimaSMA
         
-        report = f"{daily_data['date_str']} – SMA: {condition} con {daily_data['sky_desc']}, máxima {daily_data['max_temp']}°C, mínima {daily_data['min_temp']}°C. Viento del {daily_data['wind_dir']} orden de {daily_data['wind_speed']} km/h (Ráfagas {daily_data['gusts']} km/h). #ClimaSMA"
+        report = f"{daily_data['date_str']} – SMA: {condition} con {daily_data['sky_desc']}, máxima {daily_data['max_temp']}°C, mínima {daily_data['min_temp']}°C. Viento del {daily_data['wind_dir']} a {daily_data['wind_speed']} km/h (Ráfagas {daily_data['gusts']} km/h). #ClimaSMA"
         return report
     def generate_report(self, daily_data):
         # 1. Try API if Key exists
@@ -58,7 +58,7 @@ class MeteorologistBot:
             Ráfagas: {daily_data['gusts']} km/h
             
             Formato OBLIGATORIO:
-            {daily_data['date_str']} – SMA: [condiciones] con [cielo detallado], máxima {daily_data['max_temp']}°C, mínima {daily_data['min_temp']}°C. Viento del {daily_data['wind_dir']} orden de {daily_data['wind_speed']} km/h (Ráfagas {daily_data['gusts']} km/h). #ClimaSMA
+            {daily_data['date_str']} – SMA: [condiciones] con [cielo detallado], máxima {daily_data['max_temp']}°C, mínima {daily_data['min_temp']}°C. Viento del {daily_data['wind_dir']} a {daily_data['wind_speed']} km/h (Ráfagas {daily_data['gusts']} km/h). #ClimaSMA
             """
             for model_name in self.models:
                 try:
