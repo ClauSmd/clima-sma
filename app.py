@@ -5,8 +5,10 @@ from fusion_engine import FusionEngine
 from ai_reporter import MeteorologistBot
 import os
 import textwrap
+
 # Page Config
 st.set_page_config(page_title="Pronóstico SMA - Fusión", page_icon="🌦️", layout="wide")
+
 # Custom CSS for AIC Style
 st.markdown("""
 <style>
@@ -55,38 +57,42 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
 # Title
 st.title("🌦️ Weather Aggregator SMA")
 st.markdown("**Fusión de Fuentes:** SMN (Nacional) + AIC (Cuenca) + Open-Meteo (Ráfagas)")
+
 # Sidebar for API Key
 with st.sidebar:
     st.header("Configuración")
     api_key_input = st.text_input("Gemini API Key", type="password", value=os.environ.get("GOOGLE_API_KEY", ""))
     if api_key_input:
         os.environ["GOOGLE_API_KEY"] = api_key_input
+
 # Main Logic
 try:
     with st.spinner("Fusionando datos de SMN, AIC y Open-Meteo..."):
         engine = FusionEngine()
         forecast_data = engine.get_5_day_forecast()
+
     # Layout: Premium Card Grid
     st.markdown("""
     <style>
         .weather-card {
-            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+            background-color: var(--secondary-background-color);
             border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-            border: 1px solid #e1e4e8;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            border: 1px solid var(--secondary-background-color);
             overflow: hidden;
             transition: transform 0.2s;
             margin-bottom: 20px;
         }
         .weather-card:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 16px rgba(0,0,0,0.12);
+            box-shadow: 0 8px 12px rgba(0,0,0,0.15);
         }
         .card-header {
-            background-color: #007bff; /* SMN Blue */
+            background-color: #007bff; /* SMN Blue stays as brand color */
             color: white;
             padding: 10px;
             text-align: center;
@@ -97,16 +103,17 @@ try:
         .card-body {
             padding: 15px;
             text-align: center;
-            color: #333;
+            color: var(--text-color);
         }
         .weather-icon {
             font-size: 3.5em; /* Large Icon */
             margin: 10px 0;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+            text-shadow: 0px 0px 10px rgba(128,128,128,0.2);
         }
         .sky-text {
             font-size: 0.9em;
-            color: #666;
+            color: var(--text-color);
+            opacity: 0.8;
             margin-bottom: 15px;
             text-transform: capitalize;
             height: 40px; /* Fixed height for alignment */
@@ -121,7 +128,7 @@ try:
             align-items: center;
             gap: 15px;
             margin-bottom: 15px;
-            background: rgba(0,0,0,0.03);
+            background: rgba(128,128,128,0.1); /* Transparent grey compatible with both modes */
             padding: 8px;
             border-radius: 8px;
         }
@@ -129,9 +136,9 @@ try:
             display: flex;
             flex-direction: column;
         }
-        .temp-val-max { font-size: 1.8em; font-weight: 700; color: #e53935; line-height: 1; }
-        .temp-val-min { font-size: 1.4em; font-weight: 600; color: #1e88e5; line-height: 1; }
-        .temp-label { font-size: 0.7em; color: #888; text-transform: uppercase; margin-top: 4px; }
+        .temp-val-max { font-size: 1.8em; font-weight: 700; color: #ff6b6b; line-height: 1; } /* Lighter red for visibility on dark */
+        .temp-val-min { font-size: 1.4em; font-weight: 600; color: #4dabf7; line-height: 1; } /* Lighter blue for visibility on dark */
+        .temp-label { font-size: 0.7em; color: var(--text-color); opacity: 0.7; text-transform: uppercase; margin-top: 4px; }
         
         .stat-grid {
             display: grid;
@@ -139,25 +146,27 @@ try:
             gap: 8px;
             font-size: 0.85em;
             margin-top: 10px;
-            border-top: 1px solid #eee;
+            border-top: 1px solid rgba(128,128,128,0.2);
             padding-top: 10px;
         }
         .stat-box {
-            background-color: #f8f9fa;
+            background-color: rgba(128,128,128,0.05);
             padding: 5px;
             border-radius: 6px;
         }
-        .stat-value { font-weight: 600; color: #333; }
-        .stat-label { font-size: 0.8em; color: #777; }
+        .stat-value { font-weight: 600; color: var(--text-color); }
+        .stat-label { font-size: 0.8em; color: var(--text-color); opacity: 0.7; }
         .source-tag {
             margin-top: 10px;
             font-size: 0.7em;
-            color: #aaa;
+            color: var(--text-color);
+            opacity: 0.5;
             text-align: right;
             font-style: italic;
         }
     </style>
     """, unsafe_allow_html=True)
+
     cols = st.columns(5)
     for i, col in enumerate(cols):
         day = forecast_data[i]
@@ -214,6 +223,8 @@ try:
         
         with col:
             st.markdown(html_card, unsafe_allow_html=True)
+
+
     st.markdown("---")
     st.subheader("🤖 Meteorólogo Virtual (IA)")
     
@@ -265,6 +276,8 @@ try:
                 st.caption("🪁 Windguru")
                 st.text(d['wg'])
             st.markdown("---")
+
 except Exception as e:
     st.error(f"Ocurrió un error crítico: {e}")
     st.exception(e)
+
