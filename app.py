@@ -1,181 +1,162 @@
-import streamlit as st
-import requests
-import google.generativeai as genai
-from datetime import datetime, timedelta
-import zipfile
-import io
-import re
-import pdfplumber
-import urllib3
 import pandas as pd
-import logging
-from bs4 import BeautifulSoup
-
-# Configurar logging para debug
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Deshabilitar warnings de SSL para AIC
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# ============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILO
-# ============================================================================
-st.set_page_config(page_title="Sistema Climático SMA v2026", page_icon="🏔️", layout="wide")
-
-st.markdown("""
-<style>
-    .reporte-final { 
-        background-color: #1e1e1e; 
-        padding: 30px; 
-        border-radius: 15px; 
-        font-size: 1.15rem; 
-        line-height: 1.7; 
-        color: #f0f2f6; 
-        border: 1px solid #444; 
-        white-space: pre-wrap;
-        font-family: 'Helvetica Neue', sans-serif;
-    }
-    .raw-data-box {
-        background-color: #0e1117;
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid #333;
-        font-family: monospace;
-        font-size: 0.85rem;
-        height: 300px;
-        overflow-y: auto;
-        white-space: pre-wrap;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ============================================================================
-# 2. LÓGICA DE INTELIGENCIA ARTIFICIAL
-# ============================================================================
-def llamar_ia_con_fallback(prompt):
-    motores = [
-        "models/gemini-3-flash", 
-        "models/gemini-3-pro",
-        "models/gemini-2.0-flash",
-        "models/gemini-1.5-flash"
-    ]
-    
-    for motor in motores:
-        try:
-            model = genai.GenerativeModel(motor)
-            response = model.generate_content(prompt)
-            if response.text:
-                return response.text, motor.replace("models/", "").upper()
-        except:
-            continue
-                
-    return "❌ Error: Ningún motor de IA pudo procesar la solicitud.", "NINGUNO"
-
-# ============================================================================
-# 3. EXTRACCIÓN DE DATOS
-# ============================================================================
-
-def obtener_datos_aic():
-    try:
-        url = "https://www.aic.gob.ar/sitio/extendido-pdf?id_localidad=22&id_pronostico=1"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, verify=False, timeout=25)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            texto = soup.get_text(separator=' ', strip=True)
-            return texto[:3000], True, f"HTML/PDF leído ({len(texto)} chars)"
-        return "Error HTTP", False, str(response.status_code)
-    except Exception as e:
-        return str(e), False, "Error de conexión"
-
-def obtener_datos_smn():
-    try:
-        url = "https://ssl.smn.gob.ar/dpd/zipopendata.php?dato=pron5d"
-        r = requests.get(url, timeout=20)
-        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            archivo_txt = [f for f in z.namelist() if f.endswith('.txt')][0]
-            with z.open(archivo_txt) as f:
-                contenido = f.read().decode('utf-8', errors='ignore')
-                if "CHAPELCO_AERO" in contenido:
-                    bloque = contenido.split("CHAPELCO_AERO")[1].split("=")[0].strip()
-                    return bloque, True, "Chapelco Aero OK"
-        return "No encontrado", False, "Filtro fallido"
-    except Exception as e:
-        return str(e), False, "Error ZIP"
-
-def obtener_datos_openmeteo():
-    try:
-        # Forzado de zona horaria local para evitar salto de día
-        url = "https://api.open-meteo.com/v1/forecast?latitude=-40.15&longitude=-71.35&daily=temperature_2m_max,temperature_2m_min,windspeed_10m_max,precipitation_sum&timezone=America%2FArgentina%2FBuenos_Aires"
-        res = requests.get(url, timeout=15).json()
-        return res, True, "API Global OK"
-    except Exception as e:
-        return None, False, str(e)
-
-# ============================================================================
-# 4. INTERFAZ Y PROCESAMIENTO
-# ============================================================================
-
-with st.sidebar:
-    st.header("⚙️ Configuración")
-    fecha_base = st.date_input("Fecha Base", datetime.now())
-    st.markdown("---")
-    st.info("Ponderación: 40% AIC/SMN | 60% Satelital")
-
-st.title("🏔️ Sistema Meteorológico SMA")
-
-if st.button("🚀 GENERAR PRONÓSTICO AVANZADO", type="primary", use_container_width=True):
-    
-    try:
-        genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    except:
-        st.error("API Key no configurada en Secrets.")
-        st.stop()
-    
-    with st.status("Analizando fuentes y cruzando datos...") as status:
-        datos_aic, aic_ok, debug_aic = obtener_datos_aic()
-        datos_smn, smn_ok, debug_smn = obtener_datos_smn()
-        datos_om, om_ok, debug_om = obtener_datos_openmeteo()
+import datetime
+from data_sources import SMNProvider, AICProvider, OpenMeteoProvider, AccuWeatherProvider, WindguruProvider, MetNoProvider
+class FusionEngine:
+    def __init__(self):
+        self.smn = SMNProvider()
+        self.aic = AICProvider()
+        self.om = OpenMeteoProvider()
+        self.metno = MetNoProvider() # New 4th Source
+        self.aw = AccuWeatherProvider()
+        self.wg = WindguruProvider()
+    def get_5_day_forecast(self):
+        # 1. Initialize target dates (Today + 4 days)
+        today = datetime.date.today()
+        target_dates = [today + datetime.timedelta(days=i) for i in range(5)]
         
-        # PROMPT MEJORADO PARA FORZAR INICIO HOY
-        prompt = f"""
-        FECHA DE REFERENCIA: {fecha_base.strftime('%A %d de %B de %Y')}
-        UBICACIÓN: San Martín de los Andes, Neuquén.
-
-        DATOS CRUDOS AIC: {datos_aic if aic_ok else 'No disp.'}
-        DATOS CRUDOS SMN: {datos_smn if smn_ok else 'No disp.'}
-        DATOS CRUDOS SATELITALES: {datos_om if om_ok else 'No disp.'}
-
-        INSTRUCCIONES CRÍTICAS:
-        1. Generar pronóstico para 6 días EMPEZANDO DESDE HOY {fecha_base.strftime('%d/%m')}.
-        2. Seguir estrictamente este formato: [Día de la semana] [Día] de [Mes] – San Martín de los Andes: [condiciones] con [cielo], y máxima esperada de [temp] °C, mínima de [temp] °C. Viento del [dir] entre [min] y [max] km/h, [lluvias].
-        3. Usar los hashtags solicitados: #SanMartínDeLosAndes #ClimaSMA #[Condicion]
-        4. Aplicar ponderación 40/60.
-        """
-
-        sintesis, motor_ia = llamar_ia_con_fallback(prompt)
-        status.update(label="✅ Análisis Meteorológico Completo", state="complete")
-
-    # --- NUEVA SECCIÓN DE AUDITORÍA ---
-    st.markdown("### 🔍 Auditoría de Datos Extraídos")
-    st.info("Revisa aquí abajo qué información real se envió a la IA para el análisis.")
-    tab1, tab2, tab3 = st.tabs(["📡 Datos AIC (Neuquén)", "🏔️ Datos SMN (Chapelco)", "🛰️ Datos Globales (JSON)"])
-    
-    with tab1:
-        st.markdown(f'<div class="raw-data-box">{datos_aic}</div>', unsafe_allow_html=True)
-    with tab2:
-        st.markdown(f'<div class="raw-data-box">{datos_smn}</div>', unsafe_allow_html=True)
-    with tab3:
-        st.json(datos_om)
-
-    # --- RESULTADO FINAL ---
-    st.markdown("---")
-    st.markdown("### 📋 PRONÓSTICO GENERADO")
-    st.markdown(f'<div class="reporte-final">{sintesis}</div>', unsafe_allow_html=True)
-
-    # Panel de métricas rápidas
-    col1, col2, col3 = st.columns(3)
-    col1.metric("AIC", "ONLINE" if aic_ok else "OFFLINE", debug_aic)
-    col2.metric("SMN", "ONLINE" if smn_ok else "OFFLINE", debug_smn)
-    col3.metric("Motor IA", motor_ia)
+        # 2. Fetch Data
+        aic_data = self.aic.get_forecast() 
+        smn_data = self.smn.get_forecast()
+        om_data = self.om.get_data()
+        metno_data = self.metno.get_forecast()
+        aw_data = self.aw.get_forecast()
+        wg_data = self.wg.get_forecast()
+        
+        # 3. Build Base DataFrame
+        final_forecast = []
+        
+        # Helper to find date in list of dicts (Generic)
+        def find_by_date(date, data):
+            if not data: return None
+            for d in data:
+                if d['date'] == date: return d
+            return None
+        # Helper to find date in Open-Meteo
+        def find_in_om(date, data):
+            if not data or 'daily' not in data: return None
+            daily = data['daily']
+            times = daily.get('time', [])
+            date_str = date.isoformat()
+            try:
+                idx = times.index(date_str)
+                return {
+                    'max_temp': round(daily['temperature_2m_max'][idx]),
+                    'min_temp': round(daily['temperature_2m_min'][idx]),
+                    'gusts': round(daily['wind_gusts_10m_max'][idx]),
+                    'code': daily['weather_code'][idx],
+                    'wind_speed': round(daily['wind_speed_10m_max'][idx]),
+                    'wind_dir_deg': daily['wind_direction_10m_dominant'][idx]
+                }
+            except ValueError: return None
+        wmo_codes = {
+            0: "Despejado", 1: "Mayormente Despejado", 2: "Parcialmente Nublado", 3: "Nublado",
+            45: "Niebla", 48: "Niebla", 51: "Llovizna", 53: "Llovizna", 55: "Llovizna",
+            61: "Lluvias", 63: "Lluvias", 65: "Lluvias Fuertes",
+            80: "Chubascos", 81: "Chubascos", 82: "Chubascos",
+            95: "Tormenta", 96: "Tormenta Granizo", 99: "Tormenta Granizo"
+        }
+        
+        def deg_to_cardinal(deg):
+            dirs = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"]
+            idx = round(deg / 45) % 8
+            return dirs[idx]
+        for date in target_dates:
+            day_summary = {
+                'date': date,
+                'date_str': date.strftime("%A %d").title().replace("Sunday", "Domingo").replace("Monday", "Lunes").replace("Tuesday", "Martes").replace("Wednesday", "Miércoles").replace("Thursday", "Jueves").replace("Friday", "Viernes").replace("Saturday", "Sábado"), # Simple Spanish mapping
+                'sky_desc': "Desconocido",
+                'max_temp': None,
+                'min_temp': None,
+                'wind_speed': None,
+                'wind_dir': "-",
+                'gusts': None,
+                'pressure': "-",
+                'source': 'Fusion'
+            }
+            
+            aic_record = find_by_date(date, aic_data)
+            smn_record = find_by_date(date, smn_data)
+            metno_record = find_by_date(date, metno_data)
+            om_record = find_in_om(date, om_data)
+            
+            # Placeholders
+            aw_record = None 
+            wg_record = None
+            
+            val_sources = []
+            
+            # 1. Open-Meteo (40%)
+            if om_record:
+                val_sources.append({'src': 'OM', 'max': om_record['max_temp'], 'min': om_record['min_temp'], 'wind': om_record['wind_speed'], 'weight': 0.4})
+            
+            # Others share 60%
+            others = [
+                ('AIC', aic_record),
+                ('SMN', smn_record),
+                ('Met.no', metno_record),
+                ('AccuWeather', aw_record),
+                ('Windguru', wg_record)
+            ]
+            
+            active_others = []
+            for name, rec in others:
+                if rec:
+                    val_sources.append({'src': name, 'max': rec['max_temp'], 'min': rec['min_temp'], 'wind': rec['wind_speed'], 'weight': 0.0})
+                    active_others.append(name)
+            
+            # Distribute weights
+            non_om_sources = [x for x in val_sources if x['src'] != 'OM']
+            if non_om_sources:
+                share = 0.6 / len(non_om_sources)
+                for x in non_om_sources: x['weight'] = share
+            elif val_sources:
+                # Only OM available
+                val_sources[0]['weight'] = 1.0
+            # Calculate Weighted Averages
+            w_max, w_min, w_wind, total_w = 0, 0, 0, 0
+            for item in val_sources:
+                if item['max'] is not None:
+                    w_max += item['max'] * item['weight']
+                    w_min += item['min'] * item['weight']
+                    w_wind += item['wind'] * item['weight']
+                    total_w += item['weight']
+            
+            if total_w > 0:
+                day_summary['max_temp'] = int(round(w_max / total_w))
+                day_summary['min_temp'] = int(round(w_min / total_w))
+                day_summary['wind_speed'] = int(round(w_wind / total_w))
+            
+            # Sky/Icon Priority (AIC > OM > SMN...)
+            if aic_record:
+                day_summary['sky_desc'] = aic_record['sky_text']
+                day_summary['wind_dir'] = aic_record['wind_dir']
+                day_summary['pressure'] = f"{aic_record['pressure']} hPa" if aic_record['pressure'] else "-"
+            elif om_record:
+                day_summary['sky_desc'] = wmo_codes.get(om_record['code'], "Variable")
+                day_summary['wind_dir'] = deg_to_cardinal(om_record['wind_dir_deg'])
+            if om_record:
+                day_summary['gusts'] = om_record['gusts']
+            
+            # Source Label
+            srcs = [x['src'] for x in val_sources]
+            day_summary['source'] = f"Fusion ({', '.join(srcs)})"
+            # Ensure Integers
+            if day_summary['max_temp'] is not None: day_summary['max_temp'] = int(round(day_summary['max_temp']))
+            if day_summary['min_temp'] is not None: day_summary['min_temp'] = int(round(day_summary['min_temp']))
+            if day_summary['wind_speed'] is not None: day_summary['wind_speed'] = int(round(day_summary['wind_speed']))
+            if day_summary['gusts'] is not None: day_summary['gusts'] = int(round(day_summary['gusts']))
+            # Debug Info
+            day_summary['debug'] = {
+                'aic': aic_record,
+                'om': om_record,
+                'smn': smn_record,
+                'aw': metno_record, # Using AW slot to show Met.no for now, or I should add a column
+                'wg': None
+            }
+            final_forecast.append(day_summary)
+        return final_forecast
+if __name__ == "__main__":
+    engine = FusionEngine()
+    forecast = engine.get_5_day_forecast()
+    for day in forecast:
+        print(day)
