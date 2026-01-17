@@ -1,14 +1,13 @@
 import pandas as pd
 import datetime
-from data_sources import SMNProvider, AICProvider, OpenMeteoProvider, AccuWeatherProvider, WindguruProvider, MetNoProvider
+from data_sources import SMNProvider, AICProvider, OpenMeteoProvider, AccuWeatherProvider, MetNoProvider
 class FusionEngine:
     def __init__(self):
         self.smn = SMNProvider()
         self.aic = AICProvider()
         self.om = OpenMeteoProvider()
-        self.metno = MetNoProvider() # New 4th Source
+        self.metno = MetNoProvider() 
         self.aw = AccuWeatherProvider()
-        self.wg = WindguruProvider()
     def get_5_day_forecast(self):
         # 1. Initialize target dates (Today + 4 days)
         today = datetime.date.today()
@@ -20,12 +19,11 @@ class FusionEngine:
         om_data = self.om.get_data()
         metno_data = self.metno.get_forecast()
         aw_data = self.aw.get_forecast()
-        wg_data = self.wg.get_forecast()
         
         # 3. Build Base DataFrame
         final_forecast = []
         
-        # Helper to find date in list of dicts (Generic)
+        # Helper to find date in list of dicts
         def find_by_date(date, data):
             if not data: return None
             for d in data:
@@ -63,7 +61,7 @@ class FusionEngine:
         for date in target_dates:
             day_summary = {
                 'date': date,
-                'date_str': date.strftime("%A %d").title().replace("Sunday", "Domingo").replace("Monday", "Lunes").replace("Tuesday", "Martes").replace("Wednesday", "Miércoles").replace("Thursday", "Jueves").replace("Friday", "Viernes").replace("Saturday", "Sábado"), # Simple Spanish mapping
+                'date_str': date.strftime("%A %d").title().replace("Sunday", "Domingo").replace("Monday", "Lunes").replace("Tuesday", "Martes").replace("Wednesday", "Miércoles").replace("Thursday", "Jueves").replace("Friday", "Viernes").replace("Saturday", "Sábado"),
                 'sky_desc': "Desconocido",
                 'max_temp': None,
                 'min_temp': None,
@@ -78,10 +76,7 @@ class FusionEngine:
             smn_record = find_by_date(date, smn_data)
             metno_record = find_by_date(date, metno_data)
             om_record = find_in_om(date, om_data)
-            
-            # Placeholders
             aw_record = None 
-            wg_record = None
             
             val_sources = []
             
@@ -94,8 +89,7 @@ class FusionEngine:
                 ('AIC', aic_record),
                 ('SMN', smn_record),
                 ('Met.no', metno_record),
-                ('AccuWeather', aw_record),
-                ('Windguru', wg_record)
+                ('AccuWeather', aw_record)
             ]
             
             active_others = []
@@ -104,7 +98,7 @@ class FusionEngine:
                     val_sources.append({'src': name, 'max': rec['max_temp'], 'min': rec['min_temp'], 'wind': rec['wind_speed'], 'weight': 0.0})
                     active_others.append(name)
             
-            # Distribute weights
+            # Distribute weights dynamically
             non_om_sources = [x for x in val_sources if x['src'] != 'OM']
             if non_om_sources:
                 share = 0.6 / len(non_om_sources)
@@ -126,7 +120,7 @@ class FusionEngine:
                 day_summary['min_temp'] = int(round(w_min / total_w))
                 day_summary['wind_speed'] = int(round(w_wind / total_w))
             
-            # Sky/Icon Priority (AIC > OM > SMN...)
+            # Sky/Icon Priority
             if aic_record:
                 day_summary['sky_desc'] = aic_record['sky_text']
                 day_summary['wind_dir'] = aic_record['wind_dir']
@@ -137,7 +131,6 @@ class FusionEngine:
             if om_record:
                 day_summary['gusts'] = om_record['gusts']
             
-            # Source Label
             srcs = [x['src'] for x in val_sources]
             day_summary['source'] = f"Fusion ({', '.join(srcs)})"
             # Ensure Integers
@@ -149,14 +142,9 @@ class FusionEngine:
             day_summary['debug'] = {
                 'aic': aic_record,
                 'om': om_record,
-                'smn': smn_record,
-                'aw': metno_record, # Using AW slot to show Met.no for now, or I should add a column
-                'wg': None
+                'smn': smn_record, # SMN is string block usually
+                'aw': metno_record # Using AW slot for Met.no
             }
             final_forecast.append(day_summary)
+            
         return final_forecast
-if __name__ == "__main__":
-    engine = FusionEngine()
-    forecast = engine.get_5_day_forecast()
-    for day in forecast:
-        print(day)
