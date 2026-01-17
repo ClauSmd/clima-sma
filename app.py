@@ -5,10 +5,8 @@ from fusion_engine import FusionEngine
 from ai_reporter import MeteorologistBot
 import os
 import textwrap
-
 # Page Config
 st.set_page_config(page_title="Pronóstico SMA - Fusión", page_icon="🌦️", layout="wide")
-
 # Custom CSS for AIC Style
 st.markdown("""
 <style>
@@ -57,24 +55,35 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 # Title
 st.title("🌦️ Weather Aggregator SMA")
 st.markdown("**Fusión de Fuentes:** SMN (Nacional) + AIC (Cuenca) + Open-Meteo (Ráfagas)")
-
-# Sidebar for API Key
+# Sidebar for Configuration (Optional info, debug)
 with st.sidebar:
     st.header("Configuración")
-    api_key_input = st.text_input("Gemini API Key", type="password", value=os.environ.get("GOOGLE_API_KEY", ""))
-    if api_key_input:
-        os.environ["GOOGLE_API_KEY"] = api_key_input
-
+    
+    # Smart Key Logic: Show input only if NOT in environment (for local use)
+    if "GOOGLE_API_KEY" not in os.environ:
+        api_key_input = st.text_input("Gemini API Key (Local)", type="password", help="En despliegue usar Secrets.")
+        if api_key_input:
+            os.environ["GOOGLE_API_KEY"] = api_key_input
+            st.success("Key configurada temporalmente")
+    else:
+        st.success("✅ API Key detectada (Sistema)")
+    
+    if st.button("Forzar Actualización"):
+        st.cache_data.clear()
+        st.experimental_rerun()
+# Main Logic
 # Main Logic
 try:
-    with st.spinner("Fusionando datos de SMN, AIC y Open-Meteo..."):
+    # Caching: Refresh every 1 hour (3600 seconds) or when cache is cleared
+    @st.cache_data(ttl=3600, show_spinner="Fusionando datos de SMN, AIC, Met.no y Open-Meteo...")
+    def get_fused_data():
         engine = FusionEngine()
-        forecast_data = engine.get_5_day_forecast()
-
+        return engine.get_5_day_forecast()
+    
+    forecast_data = get_fused_data()
     # Layout: Premium Card Grid
     st.markdown("""
     <style>
@@ -166,7 +175,6 @@ try:
         }
     </style>
     """, unsafe_allow_html=True)
-
     cols = st.columns(5)
     for i, col in enumerate(cols):
         day = forecast_data[i]
@@ -223,8 +231,6 @@ try:
         
         with col:
             st.markdown(html_card, unsafe_allow_html=True)
-
-
     st.markdown("---")
     st.subheader("🤖 Meteorólogo Virtual (IA)")
     
@@ -256,9 +262,10 @@ try:
             d = day['debug']
             
             # Updated to show all 5 sources
-            c1, c2, c3, c4, c5 = st.columns(5)
+            # Updated to show all 4 active sources
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
-                st.caption("🟠 Open-Meteo (50%)")
+                st.caption("🟠 Open-Meteo (40%)")
                 if d['om']: st.json(d['om'])
                 else: st.warning("-")
             with c2:
@@ -270,14 +277,9 @@ try:
                 st.text(d['smn'])
             with c4:
                 st.caption("🌤️ Met.no / AW")
-                if d['aw']: st.json(d['aw']) # Showing Met.no data here as per fusion logic
+                if d['aw']: st.json(d['aw']) 
                 else: st.warning("-")
-            with c5:
-                st.caption("🪁 Windguru")
-                st.text(d['wg'])
             st.markdown("---")
-
 except Exception as e:
     st.error(f"Ocurrió un error crítico: {e}")
     st.exception(e)
-
