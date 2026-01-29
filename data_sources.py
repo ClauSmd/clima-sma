@@ -9,7 +9,7 @@ import pdfplumber
 import json
 import time
 class SMNProvider:
-    def __init__(self, location_id="CHAPELCO"):
+    def __init__(self, location_id="CHAPELCO_AERO"):
         self.location_id = location_id
         self.zip_url = "https://ssl.smn.gob.ar/dpd/zipopendata.php?dato=pron5d"
         self.cache_file = "smn_cache.json"
@@ -19,41 +19,49 @@ class SMNProvider:
             if os.path.exists(self.cache_file):
                 with open(self.cache_file, 'r') as f:
                     data = json.load(f)
-                    if time.time() - data.get('timestamp', 0) < 86400: # 24 hours
-                        return data.get('content')
+                    # Retornamos el contenido sin importar la edad si el servidor falla
+                    return data.get('content')
             return None
         except: return None
+
     def _save_cache(self, content):
         try:
-            with open(self.cache_file, 'w') as f:
-                json.dump({'timestamp': time.time(), 'content': content}, f)
+            # Solo guardamos si el contenido tiene datos de la ubicación
+            if content and self.location_id in content:
+                with open(self.cache_file, 'w') as f:
+                    json.dump({'timestamp': time.time(), 'content': content}, f)
         except: pass
+
     def get_forecast(self):
         content = None
-        # 1. LIVE ATTEMPT
+        # 1. Intento de descarga en vivo
         try:
-            r = requests.get(self.zip_url, stream=True, timeout=10)
+            r = requests.get(self.zip_url, stream=True, timeout=15)
             if r.status_code == 200:
                 with zipfile.ZipFile(io.BytesIO(r.content)) as z:
                     txt_files = [n for n in z.namelist() if n.endswith('.txt')]
                     if txt_files:
                         with z.open(txt_files[0]) as f:
-                            raw_content = f.read().decode('latin-1', errors='ignore')
-                            if len(raw_content) > 0 and self.location_id in raw_content:
-                                content = raw_content
-                                self._save_cache(content)
+                            raw = f.read().decode('latin-1', errors='ignore')
+                            if self.location_id in raw:
+                                content = raw
+                                self._save_cache(content) # Actualizamos backup
         except Exception as e:
-            print(f"SMN Live Fetch Error: {e}")
-        # 2. FALLBACK
+            print(f"SMN Live Error: {e}")
+
+        # 2. Fallback automático al Backup si falla la descarga o viene vacío
         if not content:
             content = self._load_cache()
+        
         if not content: return None
-        # 3. PARSING
+
+        # 3. Parseo Ultra-Robusto con Regex
         try:
             lines = content.splitlines()
             capture = False
-            date_pattern = re.compile(r'^\s*\d{1,2}/[A-Z]{3}/\d{4}')
-            daily_agg = collections.defaultdict(lambda: {'temps': [], 'winds': [], 'precip': 0.0, 'dirs': []})
+            # Detecta fechas como 28/ENE/2026
+            date_pattern = re.compile(r'(\d{1,2})/([A-Z]{3})/(\d{4})')
+            daily_agg = collections.defaultdict(lambda: {'temps': [], 'winds': []})
             meses = {"ENE": 1, "FEB": 2, "MAR": 3, "ABR": 4, "MAY": 5, "JUN": 6, 
                      "JUL": 7, "AGO": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DIC": 12}
             
@@ -62,38 +70,39 @@ class SMNProvider:
                     capture = True
                     continue 
                 if capture:
-                    if date_pattern.match(line):
-                        parts = line.split()
+                    if "=====" in line and not any(m in line for m in meses):
+                        if len(daily_agg) > 0: break # Fin de la sección
+                        else: continue
+                    
+                    match = date_pattern.search(line)
+                    if match:
                         try:
-                            date_raw = parts[0]
-                            day, month_str, year = date_raw.split('/')
-                            date_obj = datetime.date(int(year), meses.get(month_str.upper(), 1), int(day))
-                            temp = float(parts[2])
-                            speed = 0
-                            direction = "-"
-                            if '|' in parts:
-                                pipe_idx = parts.index('|')
-                                speed = float(parts[pipe_idx + 1])
-                                direction = parts[pipe_idx - 1]
-                            daily_agg[date_obj]['temps'].append(temp)
-                            daily_agg[date_obj]['winds'].append(speed)
-                            daily_agg[date_obj]['dirs'].append(direction)
+                            # Extraer Fecha
+                            d, m_str, y = match.groups()
+                            date_obj = datetime.date(int(y), meses.get(m_str.upper(), 1), int(d))
+                            
+                            # Extraer números de la línea (Temp, Dir, Vel, Precip)
+                            # Buscamos floats o ints después de la hora (ej: 00Hs.)
+                            nums = re.findall(r"[-+]?\d*\.\d+|\d+", line.split("Hs.")[-1])
+                            
+                            if len(nums) >= 3:
+                                temp = float(nums[0])
+                                wind_speed = float(nums[2]) # El tercer número suele ser KM/H tras el pipe
+                                
+                                daily_agg[date_obj]['temps'].append(temp)
+                                daily_agg[date_obj]['winds'].append(wind_speed)
                         except: continue
-                    elif "=======" in line:
-                        break
             
             forecasts = []
             for date, data in sorted(daily_agg.items()):
                 if not data['temps']: continue
-                try: wind_dir = collections.Counter(data['dirs']).most_common(1)[0][0]
-                except: wind_dir = "-"
                 forecasts.append({
                     'date': date,
                     'max_temp': int(round(max(data['temps']))),
                     'min_temp': int(round(min(data['temps']))),
                     'wind_speed': int(round(max(data['winds']))),
-                    'wind_dir': wind_dir,
-                    'sky_text': "SMN", 
+                    'wind_dir': "Var.",
+                    'sky_text': "SMN",
                     'source': 'SMN'
                 })
             return forecasts
