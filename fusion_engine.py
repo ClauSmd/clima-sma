@@ -150,11 +150,12 @@ class FusionEngine:
             
             # Debug Info
             day_summary['debug'] = {
-                'aic': aic_record,
-                'om': om_record,
-                'smn': smn_record,
-                'metno': metno_record
-            }
+    'aic': aic_record,
+    'om': om_record,
+    'smn': smn_record,
+    'aw': metno_record, # Volvemos a usar 'aw' como nombre para que app.py no de error
+    'metno': metno_record 
+}
             final_forecast.append(day_summary)
             
         return final_forecast
