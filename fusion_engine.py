@@ -1,6 +1,7 @@
 import pandas as pd
 import datetime
 from data_sources import SMNProvider, AICProvider, OpenMeteoProvider, AccuWeatherProvider, MetNoProvider
+
 class FusionEngine:
     def __init__(self):
         self.smn = SMNProvider()
@@ -8,6 +9,7 @@ class FusionEngine:
         self.om = OpenMeteoProvider()
         self.metno = MetNoProvider() 
         self.aw = AccuWeatherProvider()
+
     def get_5_day_forecast(self):
         # 1. Initialize target dates (Today + 4 days)
         today = datetime.date.today()
@@ -23,12 +25,19 @@ class FusionEngine:
         # 3. Build Base DataFrame
         final_forecast = []
         
-        # Helper to find date in list of dicts
+        # Helper robusto para encontrar fecha (compara strings ISO para evitar errores de tipo)
         def find_by_date(date, data):
             if not data: return None
+            target_str = date.isoformat() if hasattr(date, 'isoformat') else str(date)
             for d in data:
-                if d['date'] == date: return d
+                d_date = d.get('date')
+                if not d_date: continue
+                # Convertimos la fecha del registro a string ISO para comparar
+                current_str = d_date.isoformat() if hasattr(d_date, 'isoformat') else str(d_date)
+                if current_str == target_str: 
+                    return d
             return None
+
         # Helper to find date in Open-Meteo
         def find_in_om(date, data):
             if not data or 'daily' not in data: return None
@@ -45,7 +54,8 @@ class FusionEngine:
                     'wind_speed': round(daily['wind_speed_10m_max'][idx]),
                     'wind_dir_deg': daily['wind_direction_10m_dominant'][idx]
                 }
-            except ValueError: return None
+            except (ValueError, KeyError): return None
+
         wmo_codes = {
             0: "Despejado", 1: "Mayormente Despejado", 2: "Parcialmente Nublado", 3: "Nublado",
             45: "Niebla", 48: "Niebla", 51: "Llovizna", 53: "Llovizna", 55: "Llovizna",
@@ -58,6 +68,7 @@ class FusionEngine:
             dirs = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"]
             idx = round(deg / 45) % 8
             return dirs[idx]
+
         for date in target_dates:
             day_summary = {
                 'date': date,
@@ -76,15 +87,15 @@ class FusionEngine:
             smn_record = find_by_date(date, smn_data)
             metno_record = find_by_date(date, metno_data)
             om_record = find_in_om(date, om_data)
-            aw_record = None 
+            aw_record = find_by_date(date, aw_data)
             
             val_sources = []
             
-            # 1. Open-Meteo (40%)
+            # 1. Prioridad Open-Meteo (Base 40%)
             if om_record:
                 val_sources.append({'src': 'OM', 'max': om_record['max_temp'], 'min': om_record['min_temp'], 'wind': om_record['wind_speed'], 'weight': 0.4})
             
-            # Others share 60%
+            # Otras fuentes comparten el 60% restante
             others = [
                 ('AIC', aic_record),
                 ('SMN', smn_record),
@@ -92,27 +103,29 @@ class FusionEngine:
                 ('AccuWeather', aw_record)
             ]
             
-            active_others = []
+            active_others = [name for name, rec in others if rec]
+            
             for name, rec in others:
                 if rec:
-                    val_sources.append({'src': name, 'max': rec['max_temp'], 'min': rec['min_temp'], 'wind': rec['wind_speed'], 'weight': 0.0})
-                    active_others.append(name)
+                    # Inicializamos con peso 0, se distribuye abajo
+                    val_sources.append({'src': name, 'max': rec.get('max_temp'), 'min': rec.get('min_temp'), 'wind': rec.get('wind_speed'), 'weight': 0.0})
             
-            # Distribute weights dynamically
+            # Distribución dinámica de pesos
             non_om_sources = [x for x in val_sources if x['src'] != 'OM']
             if non_om_sources:
                 share = 0.6 / len(non_om_sources)
                 for x in non_om_sources: x['weight'] = share
             elif val_sources:
-                # Only OM available
+                # Si solo hay OM, se le asigna el 100%
                 val_sources[0]['weight'] = 1.0
-            # Calculate Weighted Averages
+
+            # Cálculo de promedios ponderados
             w_max, w_min, w_wind, total_w = 0, 0, 0, 0
             for item in val_sources:
-                if item['max'] is not None:
+                if item['max'] is not None and item['min'] is not None:
                     w_max += item['max'] * item['weight']
                     w_min += item['min'] * item['weight']
-                    w_wind += item['wind'] * item['weight']
+                    w_wind += (item['wind'] or 0) * item['weight']
                     total_w += item['weight']
             
             if total_w > 0:
@@ -120,30 +133,27 @@ class FusionEngine:
                 day_summary['min_temp'] = int(round(w_min / total_w))
                 day_summary['wind_speed'] = int(round(w_wind / total_w))
             
-            # Sky/Icon Priority
+            # Prioridad para descripción de cielo y dirección de viento
             if aic_record:
-                day_summary['sky_desc'] = aic_record['sky_text']
-                day_summary['wind_dir'] = aic_record['wind_dir']
-                day_summary['pressure'] = f"{aic_record['pressure']} hPa" if aic_record['pressure'] else "-"
+                day_summary['sky_desc'] = aic_record.get('sky_text', "Variable")
+                day_summary['wind_dir'] = aic_record.get('wind_dir', "-")
+                day_summary['pressure'] = f"{aic_record['pressure']} hPa" if aic_record.get('pressure') else "-"
             elif om_record:
                 day_summary['sky_desc'] = wmo_codes.get(om_record['code'], "Variable")
                 day_summary['wind_dir'] = deg_to_cardinal(om_record['wind_dir_deg'])
+            
             if om_record:
                 day_summary['gusts'] = om_record['gusts']
             
             srcs = [x['src'] for x in val_sources]
             day_summary['source'] = f"Fusion ({', '.join(srcs)})"
-            # Ensure Integers
-            if day_summary['max_temp'] is not None: day_summary['max_temp'] = int(round(day_summary['max_temp']))
-            if day_summary['min_temp'] is not None: day_summary['min_temp'] = int(round(day_summary['min_temp']))
-            if day_summary['wind_speed'] is not None: day_summary['wind_speed'] = int(round(day_summary['wind_speed']))
-            if day_summary['gusts'] is not None: day_summary['gusts'] = int(round(day_summary['gusts']))
+            
             # Debug Info
             day_summary['debug'] = {
                 'aic': aic_record,
                 'om': om_record,
-                'smn': smn_record, # SMN is string block usually
-                'aw': metno_record # Using AW slot for Met.no
+                'smn': smn_record,
+                'metno': metno_record
             }
             final_forecast.append(day_summary)
             
